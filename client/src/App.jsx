@@ -1,122 +1,115 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+/**
+ * Root application component — defines routes and protected routing.
+ *
+ * Routing logic:
+ *   - Unauthenticated → /login or /register
+ *   - Authenticated + onboarding incomplete → /onboarding
+ *   - Authenticated + onboarding complete → /dashboard
+ */
 
-function App() {
-  const [count, setCount] = useState(0)
+import { useEffect } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
+import OnboardingPage from "./pages/OnboardingPage";
+import DashboardPage from "./pages/DashboardPage";
+import useAuthStore from "./store/authStore";
 
-      <div className="ticks"></div>
+/* ------------------------------------------------------------------ */
+/* Route guard components                                              */
+/* ------------------------------------------------------------------ */
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+/**
+ * Redirect to /login if not authenticated.
+ */
+function RequireAuth({ children }) {
+  const { isAuthenticated, isLoading } = useAuthStore();
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+  if (isLoading) {
+    return (
+      <div className="min-h-dvh flex items-center justify-center bg-gradient-to-br from-primary-50 via-white to-primary-100">
+        <div className="w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
 }
 
-export default App
+/**
+ * Redirect authenticated users away from login/register.
+ * Goes to /onboarding or /dashboard based on onboarding status.
+ */
+function RedirectIfAuth({ children }) {
+  const { isAuthenticated, user } = useAuthStore();
+
+  if (isAuthenticated) {
+    if (user && user.onboarding_complete) {
+      return <Navigate to="/dashboard" replace />;
+    }
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  return children;
+}
+
+/* ------------------------------------------------------------------ */
+/* App                                                                 */
+/* ------------------------------------------------------------------ */
+
+export default function App() {
+  const loadUser = useAuthStore((s) => s.loadUser);
+
+  // Restore session on mount
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
+
+  return (
+    <Routes>
+      {/* Public routes */}
+      <Route
+        path="/login"
+        element={
+          <RedirectIfAuth>
+            <LoginPage />
+          </RedirectIfAuth>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <RedirectIfAuth>
+            <RegisterPage />
+          </RedirectIfAuth>
+        }
+      />
+
+      {/* Protected routes */}
+      <Route
+        path="/onboarding"
+        element={
+          <RequireAuth>
+            <OnboardingPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <RequireAuth>
+            <DashboardPage />
+          </RequireAuth>
+        }
+      />
+
+      {/* Catch-all */}
+      <Route path="*" element={<Navigate to="/login" replace />} />
+    </Routes>
+  );
+}
