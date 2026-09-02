@@ -51,12 +51,29 @@ async def create_user(payload: UserRegister) -> tuple[str, str]:
             detail="An account with this email already exists.",
         )
 
+    initial_facts = {
+        "name": payload.name,
+        "age": payload.age,
+        "gender": payload.gender,
+        "height_cm": payload.height,
+        "current_weight_kg": payload.current_weight,
+    }
+
     user_doc = {
         "email": payload.email,
         "password_hash": hash_password(payload.password),
         "name": payload.name,
+        "age": payload.age,
+        "gender": payload.gender,
+        "height": payload.height,
+        "current_weight": payload.current_weight,
+        "need": "",
+        "known_facts": initial_facts,
+        "asked_questions": [],
+        "answers": {},
+        "missing_information": [],
         "onboarding_complete": False,
-        "profile": {},
+        "profile": initial_facts,
         "conversation_history": [],
         "created_at": datetime.now(timezone.utc),
     }
@@ -144,3 +161,291 @@ async def get_current_user(
         )
 
     return UserInDB(doc)
+
+
+async def update_user_profile(user_id: str, updates: dict) -> UserInDB:
+    """
+    Update basic user profile metrics in MongoDB and return the updated user.
+    """
+    db = get_database()
+
+    # Filter out None values
+    clean_updates = {k: v for k, v in updates.items() if v is not None}
+    if not clean_updates:
+        doc = await db.users.find_one({"_id": ObjectId(user_id)})
+        return UserInDB(doc)
+
+    # If email is updated, verify uniqueness
+    if "email" in clean_updates:
+        existing = await db.users.find_one({
+            "email": clean_updates["email"],
+            "_id": {"$ne": ObjectId(user_id)},
+        })
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists.",
+            )
+
+    # Sync known_facts and profile sub-dict
+    sync_profile = {}
+    if "name" in clean_updates:
+        sync_profile["known_facts.name"] = clean_updates["name"]
+        sync_profile["profile.name"] = clean_updates["name"]
+    if "age" in clean_updates:
+        sync_profile["known_facts.age"] = clean_updates["age"]
+        sync_profile["profile.age"] = clean_updates["age"]
+    if "gender" in clean_updates:
+        sync_profile["known_facts.gender"] = clean_updates["gender"]
+        sync_profile["profile.gender"] = clean_updates["gender"]
+    if "height" in clean_updates:
+        sync_profile["known_facts.height_cm"] = clean_updates["height"]
+        sync_profile["profile.height_cm"] = clean_updates["height"]
+    if "current_weight" in clean_updates:
+        sync_profile["known_facts.current_weight_kg"] = clean_updates["current_weight"]
+        sync_profile["profile.current_weight_kg"] = clean_updates["current_weight"]
+
+    set_dict = {**clean_updates, **sync_profile}
+
+    result = await db.users.find_one_and_update(
+        {"_id": ObjectId(user_id)},
+        {"$set": set_dict},
+        return_document=True,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+    return UserInDB(result)
+
+
+async def update_user_need(user_id: str, need: str) -> UserInDB:
+    """
+    Update the user's primary stated need/goal in MongoDB.
+    Also synchronizes with the goals list.
+    """
+    db = get_database()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    goals = list(doc.get("goals", []))
+    if goals:
+        # Update the first active goal description
+        updated_first = False
+        for g in goals:
+            if g.get("status") == "active":
+                g["description"] = need
+                g["updated_at"] = now_iso
+                updated_first = True
+                break
+        if not updated_first:
+            goals.append({
+                "id": "goal_1",
+                "description": need,
+                "status": "active",
+                "priority": 1,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            })
+    else:
+        goals = [{
+            "id": "goal_1",
+            "description": need,
+            "status": "active",
+            "priority": 1,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }]
+
+    result = await db.users.find_one_and_update(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "need": need,
+                "goals": goals,
+                "known_facts.need": need,
+                "profile.need": need,
+            }
+        },
+        return_document=True,
+    )
+    return UserInDB(result)
+
+
+async def get_user_goals(user_id: str) -> list[dict]:
+    """
+    Retrieve all goals for a user.
+    If no goals exist but a legacy `need` exists, migrate it to the goals array.
+    """
+    db = get_database()
+    doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    goals = list(doc.get("goals", []))
+    need = (doc.get("need") or doc.get("profile", {}).get("need") or "").strip()
+
+    if not goals and need:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        initial_goal = {
+            "id": "goal_1",
+            "description": need,
+            "status": "active",
+            "priority": 1,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        goals = [initial_goal]
+        await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"goals": goals}},
+        )
+
+    return goals
+
+
+async def add_user_goal(user_id: str, description: str, priority: int | None = None) -> dict:
+    """
+    Add a new goal to the user's active goals list.
+    """
+    db = get_database()
+    doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    import uuid
+    goal_id = f"goal_{uuid.uuid4().hex[:8]}"
+
+    new_goal = {
+        "id": goal_id,
+        "description": description.strip(),
+        "status": "active",
+        "priority": priority,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    goals = list(doc.get("goals", []))
+    goals.append(new_goal)
+
+    # Sync primary need string with active goals
+    active_descs = [g["description"] for g in goals if g.get("status") == "active"]
+    combined_need = " | ".join(active_descs) if active_descs else description
+
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "goals": goals,
+                "need": combined_need,
+                "known_facts.need": combined_need,
+                "profile.need": combined_need,
+            }
+        },
+    )
+
+    return new_goal
+
+
+async def update_user_goal(
+    user_id: str,
+    goal_id: str,
+    description: str | None = None,
+    status_val: str | None = None,
+    priority: int | None = None,
+) -> dict:
+    """
+    Update an existing goal's description, status, or priority.
+    """
+    db = get_database()
+    doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    goals = list(doc.get("goals", []))
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    found_goal = None
+    for g in goals:
+        if g.get("id") == goal_id:
+            if description is not None:
+                g["description"] = description.strip()
+            if status_val is not None:
+                g["status"] = status_val
+            if priority is not None:
+                g["priority"] = priority
+            g["updated_at"] = now_iso
+            found_goal = g
+            break
+
+    if not found_goal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Goal not found.",
+        )
+
+    active_descs = [g["description"] for g in goals if g.get("status") == "active"]
+    combined_need = " | ".join(active_descs) if active_descs else ""
+
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "goals": goals,
+                "need": combined_need,
+                "known_facts.need": combined_need,
+                "profile.need": combined_need,
+            }
+        },
+    )
+
+    return found_goal
+
+
+async def delete_user_goal(user_id: str, goal_id: str) -> bool:
+    """
+    Remove or archive a goal from the user's goals list.
+    """
+    db = get_database()
+    doc = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
+    goals = [g for g in doc.get("goals", []) if g.get("id") != goal_id]
+    active_descs = [g["description"] for g in goals if g.get("status") == "active"]
+    combined_need = " | ".join(active_descs) if active_descs else ""
+
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "goals": goals,
+                "need": combined_need,
+                "known_facts.need": combined_need,
+                "profile.need": combined_need,
+            }
+        },
+    )
+
+    return True
+

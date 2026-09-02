@@ -22,11 +22,34 @@ export const loginSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Registration — minimal: email, password, name
+// Registration — static profile information: name, age, gender, height, current_weight, email, password
 // ---------------------------------------------------------------------------
 
 export const registerSchema = z
   .object({
+    name: z
+      .string()
+      .min(1, "Full name is required")
+      .max(100, "Name must be at most 100 characters"),
+    age: z
+      .coerce
+      .number({ invalid_type_error: "Age is required and must be a number" })
+      .int("Age must be an integer")
+      .min(1, "Age must be at least 1")
+      .max(120, "Please enter a valid age"),
+    gender: z
+      .string()
+      .min(1, "Gender is required"),
+    height: z
+      .coerce
+      .number({ invalid_type_error: "Height is required and must be a number" })
+      .positive("Height must be greater than 0")
+      .max(300, "Please enter height in cm (max 300)"),
+    current_weight: z
+      .coerce
+      .number({ invalid_type_error: "Current weight is required and must be a number" })
+      .positive("Weight must be greater than 0")
+      .max(500, "Please enter weight in kg (max 500)"),
     email: z
       .string()
       .min(1, "Email is required")
@@ -38,10 +61,6 @@ export const registerSchema = z
     confirmPassword: z
       .string()
       .min(1, "Please confirm your password"),
-    name: z
-      .string()
-      .min(1, "Name is required")
-      .max(100, "Name must be at most 100 characters"),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",

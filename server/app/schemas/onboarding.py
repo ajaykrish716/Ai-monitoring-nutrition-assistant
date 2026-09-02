@@ -14,19 +14,30 @@ class OnboardingAnswer(BaseModel):
     answer: str = Field(..., min_length=1, max_length=2000)
 
 
-class OnboardingQuestion(BaseModel):
+class OnboardingQuestionDetail(BaseModel):
     """
     A single AI-generated question to render on the client.
 
-    The ``type`` field tells the client which UI control to render.
-    Supported types (extensible by the AI):
-        - text       → single-line text input
-        - number     → numeric input
-        - textarea   → multi-line text input
-        - single_select → radio buttons / dropdown (options required)
-        - multi_select  → checkboxes (options required)
+    Supported types:
+        - text          → single-line text input
+        - textarea      → multi-line text input
+        - number        → numeric input
+        - single_select → single choice from AI-provided options
+        - multi_select  → multiple choices from AI-provided options
+        - boolean       → yes/no toggle or radio
     """
 
+    id: str = ""
+    text: str
+    type: str
+    options: list[str] | None = None
+    field: str = ""
+
+
+class OnboardingQuestion(BaseModel):
+    """Backwards-compatible question schema."""
+
+    id: str = ""
     type: str
     text: str
     field: str = ""
@@ -38,7 +49,9 @@ class OnboardingQuestion(BaseModel):
 class OnboardingStateResponse(BaseModel):
     """Full onboarding state returned to the client."""
 
+    status: str = "question"  # "question" | "complete"
     is_complete: bool
     questions_answered: int
-    current_question: OnboardingQuestion | None = None
+    current_question: OnboardingQuestionDetail | None = None
     profile: dict = {}
+    need: str | None = None

@@ -25,6 +25,7 @@ router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
 
 @router.post(
     "/start",
+    response_model=OnboardingStateResponse,
     summary="Start or resume the onboarding conversation",
 )
 async def start(current_user: UserInDB = Depends(get_current_user)):
@@ -46,6 +47,7 @@ async def start(current_user: UserInDB = Depends(get_current_user)):
 
 @router.post(
     "/answer",
+    response_model=OnboardingStateResponse,
     summary="Submit an answer and receive the next question",
 )
 async def answer(

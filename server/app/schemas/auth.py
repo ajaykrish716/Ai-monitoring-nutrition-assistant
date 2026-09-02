@@ -13,11 +13,15 @@ from pydantic import BaseModel, EmailStr, Field
 # ---------------------------------------------------------------------------
 
 class UserRegister(BaseModel):
-    """Registration payload — minimal account info only."""
+    """Registration payload — static registration fields."""
 
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     name: str = Field(..., min_length=1, max_length=100)
+    age: int = Field(..., ge=1, le=120)
+    gender: str = Field(..., min_length=1, max_length=50)
+    height: float = Field(..., gt=0, le=300, description="Height in cm")
+    current_weight: float = Field(..., gt=0, le=500, description="Current weight in kg")
 
 
 class UserLogin(BaseModel):
@@ -30,6 +34,32 @@ class UserLogin(BaseModel):
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
+
+class GoalItem(BaseModel):
+    """Represents a single user wellness or nutrition goal."""
+
+    id: str
+    description: str
+    status: str = "active"  # "active", "inactive", "archived"
+    priority: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class GoalCreate(BaseModel):
+    """Payload for creating a new goal."""
+
+    description: str = Field(..., min_length=1, max_length=500)
+    priority: int | None = Field(None, ge=1, le=10)
+
+
+class GoalUpdate(BaseModel):
+    """Payload for updating an existing goal."""
+
+    description: str | None = Field(None, min_length=1, max_length=500)
+    status: str | None = Field(None, pattern="^(active|inactive|archived)$")
+    priority: int | None = Field(None, ge=1, le=10)
+
 
 class TokenResponse(BaseModel):
     """Returned after successful login or registration."""
@@ -49,11 +79,35 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: str
+    age: int | None = None
+    gender: str | None = None
+    height: float | None = None
+    current_weight: float | None = None
+    need: str | None = None
+    goals: list[GoalItem] = []
     onboarding_complete: bool = False
     profile: dict = {}
+
+
+class UserUpdateProfile(BaseModel):
+    """Payload for updating user's basic profile metrics."""
+
+    name: str | None = Field(None, min_length=1, max_length=100)
+    age: int | None = Field(None, ge=1, le=120)
+    gender: str | None = Field(None, min_length=1, max_length=50)
+    height: float | None = Field(None, gt=0, le=300, description="Height in cm")
+    current_weight: float | None = Field(None, gt=0, le=500, description="Current weight in kg")
+    email: EmailStr | None = None
+
+
+class UserUpdateNeed(BaseModel):
+    """Payload for updating user's primary stated need/goal."""
+
+    need: str = Field(..., min_length=1, max_length=500)
 
 
 class MessageResponse(BaseModel):
     """Generic success message."""
 
     message: str
+

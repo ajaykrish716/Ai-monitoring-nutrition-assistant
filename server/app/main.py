@@ -14,6 +14,9 @@ from app.core.config import get_settings
 from app.db.mongodb import close_db, connect_db
 from app.routes.auth import router as auth_router
 from app.routes.onboarding import router as onboarding_router
+from app.routes.daily_plan import router as daily_plan_router
+from app.routes.tracking import router as tracking_router
+from app.routes.nutri import router as nutri_router
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +55,9 @@ app.add_middleware(
 # Routers
 app.include_router(auth_router)
 app.include_router(onboarding_router)
+app.include_router(daily_plan_router)
+app.include_router(tracking_router)
+app.include_router(nutri_router)
 
 
 @app.get("/", tags=["Health"])
