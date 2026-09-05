@@ -4,26 +4,27 @@
 
 import { Leaf, ShieldCheck, Sparkles, Brain, Award, HeartHandshake } from "lucide-react";
 import Navbar from "../components/Navbar";
+import AppLayout from "../layouts/AppLayout";
+import useAuthStore from "../store/authStore";
 
 export default function AboutPage() {
-  return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
-      <Navbar />
+  const { isAuthenticated } = useAuthStore();
 
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-12">
-        {/* Hero */}
-        <div className="text-center space-y-4 max-w-2xl mx-auto">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-100 dark:bg-primary-950/80 text-primary-800 dark:text-primary-300 text-xs font-bold uppercase tracking-wider">
-            <Sparkles className="w-3.5 h-3.5" />
-            Science-Backed Mentorship
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-black text-gray-900 dark:text-white tracking-tight">
-            Nutritional Success That Realistically Fits Your Life
-          </h1>
-          <p className="text-sm sm:text-base text-gray-600 dark:text-slate-300 leading-relaxed">
-            NutriTrack combines state-of-the-art conversational AI with deterministic nutritional calculations to deliver personalized daily guidance tailored dynamically to your budget, culture, and goals.
-          </p>
+  const content = (
+    <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-12">
+      {/* Hero */}
+      <div className="text-center space-y-4 max-w-2xl mx-auto">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-100 dark:bg-primary-950/80 text-primary-800 dark:text-primary-300 text-xs font-bold uppercase tracking-wider">
+          <Sparkles className="w-3.5 h-3.5" />
+          Science-Backed Mentorship
         </div>
+        <h1 className="text-3xl sm:text-4xl font-black text-gray-900 dark:text-white tracking-tight">
+          Nutritional Success That Realistically Fits Your Life
+        </h1>
+        <p className="text-sm sm:text-base text-gray-600 dark:text-slate-300 leading-relaxed">
+          NutriTrack combines state-of-the-art conversational AI with deterministic nutritional calculations to deliver personalized daily guidance tailored dynamically to your budget, culture, and goals.
+        </p>
+      </div>
 
         {/* 3 Pillars */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -70,7 +71,24 @@ export default function AboutPage() {
             NutriTrack is an educational and wellness mentoring tool designed to help you build balanced nutritional habits. It is not a medical diagnostic device, does not prescribe pharmaceuticals, and does not provide clinical treatments. If you have medical conditions, eating disorders, or are under a physician's care, always consult with your registered dietitian or medical professional.
           </p>
         </div>
-      </main>
+    </div>
+  );
+
+  if (isAuthenticated) {
+    return (
+      <AppLayout
+        title="About NutriTrack"
+        subtitle="Our methodology, science-backed approach, and safety commitments"
+      >
+        {content}
+      </AppLayout>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
+      <Navbar />
+      <main className="flex-1">{content}</main>
     </div>
   );
 }

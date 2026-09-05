@@ -11,7 +11,9 @@ class LogFoodRequest(BaseModel):
     """Natural language or structured food entry submission."""
 
     food_description: str = Field(..., min_length=1, max_length=1000, description="e.g. '2 idlis with sambar and coconut chutney'")
-    meal_type: str = Field(default="Snack", description="Breakfast, Lunch, Dinner, Snack")
+    meal_type: str = Field(default="Breakfast", description="Breakfast, Lunch, or Dinner")
+    quantity: float | int | None = Field(default=None, description="Optional portion quantity")
+    unit: str | None = Field(default=None, description="Optional portion unit, e.g. serving, plate, cup")
     date: str | None = Field(default=None, description="YYYY-MM-DD, defaults to today")
 
 
@@ -24,9 +26,13 @@ class FoodLogEntry(BaseModel):
     food_description: str
     meal_type: str
     matched_items: list[str] = Field(default_factory=list)
+    quantity: float | int | None = None
+    unit: str | None = None
     nutrition: MacroNutrition
     notes: str = ""
     nutri_review: str = ""
+    timing_status: str = "on_time"
+    timing_score: float = 100.0
     logged_at: datetime
 
 
@@ -37,6 +43,7 @@ class ConsumedTotals(BaseModel):
     protein: float = 0.0
     carbohydrates: float = 0.0
     fat: float = 0.0
+    fiber: float = 0.0
     water_ml: float = 0.0
 
 
@@ -57,6 +64,7 @@ class RemainingTargets(BaseModel):
     protein: float = 0.0
     carbohydrates: float = 0.0
     fat: float = 0.0
+    fiber: float = 0.0
     water_ml: float = 0.0
 
 
@@ -101,6 +109,7 @@ class TrackingTodayResponse(BaseModel):
     progress_percentages: ProgressPercentages
     nutrition_score: float = 0.0  # 0 to 100 based on actual nutritional adequacy
     plan_adherence: float = 0.0   # 0 to 100 based on adherence to suggested foods
+    meal_timing_score: float = 100.0  # 0 to 100 based on meal schedule adherence
     logs: list[FoodLogEntry]
     goal_status: DailyGoalEvaluation
     streak: StreakInfo

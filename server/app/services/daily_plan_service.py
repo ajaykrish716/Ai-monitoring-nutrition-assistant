@@ -20,7 +20,9 @@ from bson import ObjectId
 
 from app.db.mongodb import get_database
 from app.schemas.daily_plan import DailyPlanResponse
+from app.schemas.meal_schedule import DEFAULT_TIMEZONE
 from app.services.ai_service import AIServiceError, chat_completion
+from app.services.meal_schedule_service import get_default_meal_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +80,34 @@ JSON SCHEMA:
   ]
 }
 
-Provide 3 to 4 well-balanced meals (e.g. Breakfast, Lunch, Dinner, and optional Snack) that add up approximately to the daily_targets.
+Provide EXACTLY 3 main meals: Breakfast, Lunch, and Dinner. Do NOT generate snacks, morning snacks, evening snacks, or any additional snack sections. The meals must add up approximately to the daily_targets.
+
+CRITICAL VARIETY & DIVERSITY MANDATE (DO NOT REPEAT PREVIOUS MEALS):
+- Users need culinary variety to stay motivated. Never generate the same repetitive meals (e.g. avoid repeating the same oatmeal, basic chicken bowl, or plain roasted vegetables if they were recently suggested).
+- If a list of recent previously suggested meals is provided, DO NOT duplicate them.
+- Intentionally vary flavor profiles, cuisines, spices, and ingredients (e.g., Mediterranean, Asian, Mexican/Latin, wholesome stir-fries, fragrant curries, grain bowls, savory wraps, frittatas, lentil soups) while strictly respecting user allergies, preferences, and macro targets.
 """
 
 
 def _get_today_date_str() -> str:
     """Return today's date in YYYY-MM-DD format (UTC)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _enrich_meals_with_schedule(meals: list, schedule: dict) -> list:
+    """Attach timing configuration to each meal from user's schedule."""
+    enriched = []
+    for m in meals:
+        m_dict = dict(m) if isinstance(m, dict) else m.model_dump()
+        mt = m_dict.get("meal_type", "").lower()
+        if mt not in ("breakfast", "lunch", "dinner"):
+            continue
+        if mt in schedule:
+            s = schedule[mt]
+            m_dict["window_start"] = s.get("window_start") or s.get("scheduled_time")
+            m_dict["window_end"] = s.get("window_end")
+        enriched.append(m_dict)
+    return enriched
 
 
 def _build_user_context_for_plan(user: dict) -> dict:
@@ -116,6 +139,7 @@ def _build_user_context_for_plan(user: dict) -> dict:
 
     # Combine known facts into a clean dictionary
     merged_facts = {**known_facts, **profile_summary}
+    schedule = user.get("meal_schedule") or get_default_meal_schedule()
 
     return {
         "user_profile": static_profile,
@@ -123,6 +147,8 @@ def _build_user_context_for_plan(user: dict) -> dict:
         "primary_focus_summary": " | ".join(g["description"] for g in active_goals),
         "collected_personalization_facts": merged_facts,
         "onboarding_answers": answers,
+        "meal_schedule": schedule,
+        "timezone": user.get("timezone", DEFAULT_TIMEZONE),
     }
 
 
@@ -141,6 +167,9 @@ async def generate_or_get_daily_plan(
     if not user:
         raise ValueError("User not found")
 
+    schedule = user.get("meal_schedule") or get_default_meal_schedule()
+    user_tz = user.get("timezone", DEFAULT_TIMEZONE)
+
     # Check for existing plan in MongoDB if not forcing regeneration
     if not force_regenerate:
         existing_doc = await db.daily_plans.find_one({
@@ -154,27 +183,56 @@ async def generate_or_get_daily_plan(
                 date=existing_doc["date"],
                 summary=existing_doc.get("summary", ""),
                 daily_targets=existing_doc.get("daily_targets", {}),
-                meals=existing_doc.get("meals", []),
+                meals=_enrich_meals_with_schedule(existing_doc.get("meals", []), schedule),
                 physical_activities=existing_doc.get("physical_activities", []),
+                meal_schedule=schedule,
+                timezone=user_tz,
                 created_at=existing_doc.get("created_at"),
                 updated_at=existing_doc.get("updated_at"),
             )
 
+    # Fetch recent past meal plans to ensure variety and prevent repetitive meals
+    recent_meals = []
+    try:
+        past_plans_cursor = db.daily_plans.find(
+            {"user_id": user_id}
+        ).sort("date", -1).limit(5)
+        past_plans = await past_plans_cursor.to_list(length=5)
+        for pp in past_plans:
+            for pm in pp.get("meals", []):
+                name = pm.get("name")
+                if name and name not in recent_meals:
+                    recent_meals.append(name)
+    except Exception as e:
+        logger.warning("Could not fetch recent plans for variety check: %s", e)
+
     # Build context and generate plan via OpenRouter AI
     user_context = _build_user_context_for_plan(user)
+    if recent_meals:
+        user_context["recent_previously_generated_meals"] = recent_meals
+
+    prompt_content = (
+        f"Generate a personalized daily plan for date: {target_date}.\n"
+        f"User Profile & Need Context:\n{json.dumps(user_context, indent=2)}\n\n"
+    )
+    if recent_meals:
+        prompt_content += (
+            f"CRITICAL VARIETY REQUIREMENT:\n"
+            f"The user has recently received these meals:\n"
+            f"{json.dumps(recent_meals, indent=2)}\n"
+            f"DO NOT repeat any of these exact meals. Provide fresh, diverse, appetizing recipes with varied wholesome staples while maintaining target macros.\n"
+        )
+
     messages = [
         {"role": "system", "content": DAILY_PLAN_SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": (
-                f"Generate a personalized daily plan for date: {target_date}.\n"
-                f"User Profile & Need Context:\n{json.dumps(user_context, indent=2)}"
-            ),
+            "content": prompt_content,
         },
     ]
 
     try:
-        ai_data = await chat_completion(messages, temperature=0.6, max_tokens=1800)
+        ai_data = await chat_completion(messages, temperature=0.8, max_tokens=1800)
     except Exception as exc:
         logger.warning("Daily plan AI fallback: %s", exc)
         ai_data = {
@@ -235,7 +293,10 @@ async def generate_or_get_daily_plan(
             "fat": 65.0,
             "water_ml": 2500.0,
         }),
-        "meals": ai_data.get("meals", []),
+        "meals": [
+            m for m in ai_data.get("meals", [])
+            if isinstance(m, dict) and m.get("meal_type", "").lower() in ("breakfast", "lunch", "dinner")
+        ],
         "physical_activities": ai_data.get("physical_activities", []),
         "updated_at": now,
     }
@@ -258,8 +319,10 @@ async def generate_or_get_daily_plan(
         date=target_date,
         summary=plan_record["summary"],
         daily_targets=plan_record["daily_targets"],
-        meals=plan_record["meals"],
+        meals=_enrich_meals_with_schedule(plan_record["meals"], schedule),
         physical_activities=plan_record["physical_activities"],
+        meal_schedule=schedule,
+        timezone=user_tz,
         created_at=now,
         updated_at=now,
     )

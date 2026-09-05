@@ -87,6 +87,8 @@ class UserResponse(BaseModel):
     goals: list[GoalItem] = []
     onboarding_complete: bool = False
     profile: dict = {}
+    meal_schedule: dict = {}
+    timezone: str = "UTC"
 
 
 class UserUpdateProfile(BaseModel):
@@ -98,6 +100,7 @@ class UserUpdateProfile(BaseModel):
     height: float | None = Field(None, gt=0, le=300, description="Height in cm")
     current_weight: float | None = Field(None, gt=0, le=500, description="Current weight in kg")
     email: EmailStr | None = None
+    timezone: str | None = Field(None, min_length=1, max_length=100)
 
 
 class UserUpdateNeed(BaseModel):

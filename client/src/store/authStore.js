@@ -24,10 +24,12 @@ const useAuthStore = create((set) => ({
     try {
       const user = await getCurrentUser();
       set({ user });
-    } catch {
+      return user;
+    } catch (err) {
       // Token might be invalid — clear auth state
       localStorage.removeItem("access_token");
       set({ token: null, user: null, isAuthenticated: false });
+      throw err;
     }
   },
 

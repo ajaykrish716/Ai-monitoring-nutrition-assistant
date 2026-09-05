@@ -5,8 +5,11 @@
 import { useState } from "react";
 import { Mail, MessageCircle, Send, CheckCircle2, HelpCircle } from "lucide-react";
 import Navbar from "../components/Navbar";
+import AppLayout from "../layouts/AppLayout";
+import useAuthStore from "../store/authStore";
 
 export default function ContactPage() {
+  const { isAuthenticated } = useAuthStore();
   const [submitted, setSubmitted] = useState(false);
   const [formData, setFormData] = useState({
     name: "",
@@ -20,11 +23,8 @@ export default function ContactPage() {
     setSubmitted(true);
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
-      <Navbar />
-
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-8">
+  const content = (
+    <div className="max-w-4xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
         <div className="text-center space-y-2 max-w-xl mx-auto">
           <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white tracking-tight">
             Get in Touch
@@ -149,7 +149,24 @@ export default function ContactPage() {
             )}
           </div>
         </div>
-      </main>
+    </div>
+  );
+
+  if (isAuthenticated) {
+    return (
+      <AppLayout
+        title="Contact & Support"
+        subtitle="Get in touch with the NutriTrack team and nutrition mentors"
+      >
+        {content}
+      </AppLayout>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
+      <Navbar />
+      <main className="flex-1">{content}</main>
     </div>
   );
 }

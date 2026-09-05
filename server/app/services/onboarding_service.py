@@ -61,6 +61,13 @@ CORE PRINCIPLES & RULES:
    - If the user mentions surgery, medical conditions, medications, or serious symptoms, account for clinician-provided instructions, prioritize safety, and recommend consulting healthcare professionals where appropriate.
    - DO NOT generate a meal plan or diet plan at this stage. Only gather necessary context.
 
+5. CONCISENESS & TOKEN BUDGET:
+   - Always return concise, high-impact JSON within a strict 768-token budget.
+   - Keep question text clear, engaging, and under 30 words.
+   - Keep options concise (1 to 6 words each).
+   - Keep extracted_facts concise and to the point.
+   - Do not include conversational filler or pleasantries outside the JSON structure.
+
 OUTPUT JSON SCHEMA:
 You MUST respond with valid JSON ONLY (no markdown code blocks, no text before or after).
 
@@ -367,7 +374,7 @@ async def process_answer(user_id: str, answer: str) -> dict:
         if not any(isinstance(q, dict) and q.get("id") == "need" for q in asked_questions):
             asked_questions.append(INITIAL_NEED_QUESTION)
 
-        # Update user with need before calling AI
+        # Persist need and answer before calling AI, preserving current_question for safe retry
         await db.users.update_one(
             {"_id": ObjectId(user_id)},
             {
@@ -376,7 +383,6 @@ async def process_answer(user_id: str, answer: str) -> dict:
                     "known_facts": known_facts,
                     "answers": answers,
                     "asked_questions": asked_questions,
-                    "current_question": None,
                 }
             },
         )
@@ -384,7 +390,6 @@ async def process_answer(user_id: str, answer: str) -> dict:
         user["known_facts"] = known_facts
         user["answers"] = answers
         user["asked_questions"] = asked_questions
-        user["current_question"] = None
 
         return await _generate_next_ai_step(user_id, user)
 
@@ -392,19 +397,18 @@ async def process_answer(user_id: str, answer: str) -> dict:
     answers[current_qid] = cleaned_answer
     known_facts[current_qid] = cleaned_answer
 
+    # Persist answer and known_facts before calling AI, preserving current_question for safe retry
     await db.users.update_one(
         {"_id": ObjectId(user_id)},
         {
             "$set": {
                 "answers": answers,
                 "known_facts": known_facts,
-                "current_question": None,
             }
         },
     )
     user["answers"] = answers
     user["known_facts"] = known_facts
-    user["current_question"] = None
 
     return await _generate_next_ai_step(user_id, user)
 
@@ -434,6 +438,9 @@ async def get_onboarding_state(user_id: str) -> dict:
     current_q = user.get("current_question")
     if not current_q and not user_need:
         current_q = INITIAL_NEED_QUESTION
+    elif not current_q and user_need:
+        # Self-healing: if current_question was lost due to a past network glitch, dynamically recover
+        return await _generate_next_ai_step(user_id, user)
 
     return {
         "status": "question",

@@ -13,6 +13,7 @@ from bson import ObjectId
 
 from app.db.mongodb import get_database
 from app.schemas.daily_plan import DailyTargets, MacroNutrition
+from app.schemas.meal_schedule import DEFAULT_TIMEZONE, MealTimingConfig
 from app.schemas.tracking import (
     ActivityDayItem,
     ActivityHistoryResponse,
@@ -28,6 +29,16 @@ from app.schemas.tracking import (
 )
 from app.services.ai_service import chat_completion
 from app.services.daily_plan_service import generate_or_get_daily_plan
+from app.services.meal_schedule_service import (
+    compute_timing_score,
+    get_daily_meal_timing,
+    compute_daily_timing_score,
+    _parse_time_minutes,
+    _format_time_display,
+    get_default_meal_schedule,
+)
+from app.schemas.meal_schedule import DEFAULT_MEAL_SCHEDULE
+from app.core.timezone_utils import get_timezone_obj, get_user_now
 
 logger = logging.getLogger(__name__)
 
@@ -35,14 +46,23 @@ FOOD_PARSER_SYSTEM_PROMPT = """\
 You are an expert nutritional breakdown parser.
 Given a free-text food description (which may include single foods, traditional meals, brand items, or multi-course descriptions), estimate its macro nutrition with realistic dietary values.
 
+CRITICAL VALIDATION:
+1. Determine if the description represents real, consumable food, beverage, or dish.
+2. If the description is gibberish, non-food items, random letters/symbols, or completely unrecognizable as food, set "is_food": false and do not invent arbitrary nutrition numbers.
+3. If it is recognized food, set "is_food": true.
+
 Output JSON ONLY in this format:
 {
+  "is_food": true,
   "matched_items": ["Item 1", "Item 2"],
+  "quantity": 1.0,
+  "unit": "serving",
   "nutrition": {
     "calories": 250.0,
     "protein": 8.0,
     "carbohydrates": 42.0,
-    "fat": 5.0
+    "fat": 5.0,
+    "fiber": 4.0
   },
   "notes": "Estimated breakdown based on standard portion"
 }
@@ -150,14 +170,68 @@ def compute_scores(consumed: ConsumedTotals, targets: DailyTargets, logs: list[F
 
 async def log_food_item(user_id: str, payload: LogFoodRequest) -> FoodLogEntry:
     """
-    Parse food description via AI macro estimation and persist in MongoDB.
+    Validate meal type, meal window, and description, then parse food via AI
+    and persist in MongoDB. Rejects closed windows, early windows, and duplicate meals.
     """
+    # 1. Validate food description
+    desc = (payload.food_description or "").strip()
+    if not desc or len(desc) < 2:
+        raise ValueError("Food description cannot be empty.")
+
+    # 2. Validate meal_type (Breakfast, Lunch, Dinner only - no snacks)
+    mt_raw = (payload.meal_type or "").strip()
+    meal_type_cap = mt_raw.capitalize()
+    if meal_type_cap not in ("Breakfast", "Lunch", "Dinner"):
+        raise ValueError(f"Invalid meal type: '{payload.meal_type}'. Only Breakfast, Lunch, and Dinner are supported.")
+
     db = get_database()
-    target_date = payload.date or _get_today_date_str()
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user_tz_name = user.get("timezone", DEFAULT_TIMEZONE) if user else DEFAULT_TIMEZONE
+    user_tz = get_timezone_obj(user_tz_name)
+    now = datetime.now(timezone.utc)
+    user_now = now.astimezone(user_tz)
+    today_user_str = user_now.strftime("%Y-%m-%d")
+    target_date = payload.date or today_user_str
+
+    # 3. Block retroactive logging for past dates
+    if target_date != today_user_str:
+        raise ValueError(f"Retroactive logging is not permitted. {meal_type_cap} window is closed for that date.")
+
+    # 4. Check for duplicate meal log for today
+    existing_log = await db.food_logs.find_one({
+        "user_id": user_id,
+        "date": today_user_str,
+        "meal_type": {"$regex": f"^{meal_type_cap}$", "$options": "i"},
+    })
+    if existing_log:
+        raise ValueError(f"{meal_type_cap} has already been logged for today.")
+
+    # 5. Validate user's meal window
+    meal_key = meal_type_cap.lower()
+    user_schedule = (user.get("meal_schedule") if user else None) or get_default_meal_schedule()
+    cfg_dict = user_schedule.get(meal_key) or DEFAULT_MEAL_SCHEDULE.get(meal_key)
+    if not cfg_dict:
+        raise ValueError(f"No schedule configuration found for {meal_type_cap}.")
+
+    m_config = MealTimingConfig(**cfg_dict)
+    start_mins = _parse_time_minutes(m_config.window_start)
+    end_mins = _parse_time_minutes(m_config.window_end)
+    current_mins = user_now.hour * 60 + user_now.minute
+
+    # Enforce before window opens
+    if current_mins < start_mins:
+        raise ValueError(f"{meal_type_cap} is not available yet. It opens at {_format_time_display(m_config.window_start)}.")
+
+    # Enforce after window closes (NON-NEGOTIABLE)
+    if current_mins >= end_mins:
+        raise ValueError(f"{meal_type_cap} window is closed. This meal can no longer be logged for today.")
+
+    timing_status = "on_time"
+    meal_timing_score = 100.0
 
     messages = [
         {"role": "system", "content": FOOD_PARSER_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Parse nutrition for: {payload.food_description}"},
+        {"role": "user", "content": f"Parse nutrition for: {desc}"},
     ]
 
     try:
@@ -165,13 +239,18 @@ async def log_food_item(user_id: str, payload: LogFoodRequest) -> FoodLogEntry:
     except Exception as e:
         logger.warning("AI food parsing fallback: %s", e)
         ai_data = {
-            "matched_items": [payload.food_description],
-            "nutrition": {"calories": 220.0, "protein": 10.0, "carbohydrates": 25.0, "fat": 6.0},
+            "matched_items": [desc],
+            "quantity": payload.quantity or 1.0,
+            "unit": payload.unit or "serving",
+            "nutrition": {"calories": 220.0, "protein": 10.0, "carbohydrates": 25.0, "fat": 6.0, "fiber": 3.0},
             "notes": "Estimated approximation",
         }
 
+    # Reject non-food descriptions server-side
+    if ai_data.get("is_food") is False:
+        raise ValueError("The provided description does not appear to be a recognizable food or drink. Please enter what you ate (e.g., '2 scrambled eggs and whole wheat toast').")
+
     nutrition = ai_data.get("nutrition", {})
-    now = datetime.now(timezone.utc)
 
     # Generate immediate Nutri review
     try:
@@ -181,32 +260,38 @@ async def log_food_item(user_id: str, payload: LogFoodRequest) -> FoodLogEntry:
             protein=float(nutrition.get("protein", 0.0)),
             carbohydrates=float(nutrition.get("carbohydrates", 0.0)),
             fat=float(nutrition.get("fat", 0.0)),
+            fiber=float(nutrition.get("fiber", 0.0)),
         )
         nutri_review_text = await review_logged_meal(
             user_id,
-            payload.food_description,
-            payload.meal_type,
+            desc,
+            meal_type_cap,
             macro_obj,
             target_date,
         )
     except Exception as exc:
         logger.warning("Nutri review error: %s", exc)
-        nutri_review_text = f"Great fuel! 👍 Logged {payload.meal_type.lower()}."
+        nutri_review_text = f"Great fuel! 👍 Logged {meal_type_cap.lower()}."
 
     log_doc = {
         "user_id": user_id,
         "date": target_date,
-        "food_description": payload.food_description,
-        "meal_type": payload.meal_type,
-        "matched_items": ai_data.get("matched_items", [payload.food_description]),
+        "food_description": desc,
+        "meal_type": meal_type_cap,
+        "matched_items": ai_data.get("matched_items", [desc]),
+        "quantity": payload.quantity or ai_data.get("quantity", 1.0),
+        "unit": payload.unit or ai_data.get("unit", "serving"),
         "nutrition": {
             "calories": float(nutrition.get("calories", 0.0)),
             "protein": float(nutrition.get("protein", 0.0)),
             "carbohydrates": float(nutrition.get("carbohydrates", 0.0)),
             "fat": float(nutrition.get("fat", 0.0)),
+            "fiber": float(nutrition.get("fiber", 0.0)),
         },
         "notes": ai_data.get("notes", ""),
         "nutri_review": nutri_review_text,
+        "timing_status": timing_status,
+        "timing_score": meal_timing_score,
         "logged_at": now,
     }
 
@@ -226,6 +311,8 @@ async def log_food_item(user_id: str, payload: LogFoodRequest) -> FoodLogEntry:
         nutrition=log_doc["nutrition"],
         notes=log_doc["notes"],
         nutri_review=nutri_review_text,
+        timing_status=timing_status,
+        timing_score=meal_timing_score,
         logged_at=now,
     )
 
@@ -399,7 +486,11 @@ async def get_tracking_today(user_id: str, date_str: str | None = None) -> Track
     Assemble the full daily tracking summary with deterministic calculations.
     """
     db = get_database()
-    target_date = date_str or _get_today_date_str()
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user_tz_name = user.get("timezone", DEFAULT_TIMEZONE) if user else DEFAULT_TIMEZONE
+    user_now = get_user_now(user_tz_name)
+
+    target_date = date_str or user_now.strftime("%Y-%m-%d")
 
     daily_plan = await generate_or_get_daily_plan(user_id, target_date)
     targets = daily_plan.daily_targets
@@ -418,6 +509,8 @@ async def get_tracking_today(user_id: str, date_str: str | None = None) -> Track
             nutrition=l.get("nutrition", {}),
             notes=l.get("notes", ""),
             nutri_review=l.get("nutri_review", ""),
+            timing_status=l.get("timing_status", "on_time"),
+            timing_score=float(l.get("timing_score", 100.0)),
             logged_at=l.get("logged_at", datetime.now(timezone.utc)),
         )
         for l in raw_logs
@@ -458,8 +551,14 @@ async def get_tracking_today(user_id: str, date_str: str | None = None) -> Track
     nutrition_score, plan_adherence = compute_scores(consumed, targets, food_logs, daily_plan.meals)
     goal_eval = _calculate_goal_status(consumed, targets, nutrition_score)
 
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    streak_doc = user.get("streak_info", {})
+    try:
+        timing_resp = await get_daily_meal_timing(user_id, target_date)
+        meal_timing_score = compute_daily_timing_score(timing_resp.meals)
+    except Exception as err:
+        logger.warning("Error getting daily meal timing in tracking: %s", err)
+        meal_timing_score = 100.0
+
+    streak_doc = user.get("streak_info", {}) if user else {}
     streak = StreakInfo(
         current_streak=streak_doc.get("current_streak", 0),
         longest_streak=streak_doc.get("longest_streak", 0),
@@ -502,6 +601,7 @@ async def get_tracking_today(user_id: str, date_str: str | None = None) -> Track
         progress_percentages=progress,
         nutrition_score=nutrition_score,
         plan_adherence=plan_adherence,
+        meal_timing_score=meal_timing_score,
         logs=food_logs,
         goal_status=goal_eval,
         streak=streak,

@@ -103,6 +103,8 @@ async def me(current_user: UserInDB = Depends(get_current_user)):
         goals=[GoalItem(**g) for g in goals],
         onboarding_complete=current_user.onboarding_complete,
         profile=current_user.profile,
+        meal_schedule=current_user.meal_schedule,
+        timezone=current_user.timezone,
     )
 
 
@@ -136,6 +138,8 @@ async def update_profile(
         goals=[GoalItem(**g) for g in goals],
         onboarding_complete=updated_user.onboarding_complete,
         profile=updated_user.profile,
+        meal_schedule=updated_user.meal_schedule,
+        timezone=updated_user.timezone,
     )
 
 
@@ -169,6 +173,8 @@ async def update_need(
         goals=[GoalItem(**g) for g in goals],
         onboarding_complete=updated_user.onboarding_complete,
         profile=updated_user.profile,
+        meal_schedule=updated_user.meal_schedule,
+        timezone=updated_user.timezone,
     )
 
 

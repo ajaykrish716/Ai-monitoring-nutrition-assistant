@@ -2,7 +2,7 @@
  * Onboarding Page — generic renderer for AI-driven questions with unified theme tokens.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Leaf,
@@ -17,6 +17,7 @@ import {
 
 import { startOnboarding, submitAnswer } from "../services/onboardingService";
 import useThemeStore from "../store/themeStore";
+import useAuthStore from "../store/authStore";
 
 /* ------------------------------------------------------------------ */
 /* Dynamic field renderers — keyed by question type                    */
@@ -61,7 +62,7 @@ function TextareaInput({ value, onChange, placeholder }) {
   );
 }
 
-function SingleSelect({ value, onChange, options, name = "onboarding_single_select" }) {
+function SingleSelect({ value, onChange, options }) {
   return (
     <div className="space-y-2 select-none" role="radiogroup">
       {(options || []).map((opt, index) => {
@@ -73,54 +74,65 @@ function SingleSelect({ value, onChange, options, name = "onboarding_single_sele
           typeof opt === "object" && opt !== null
             ? String(opt.label ?? opt.text ?? opt.value ?? opt.id ?? optValue)
             : String(opt);
-        const isSelected = value === optValue;
+        const isSelected =
+          String(value || "").trim().toLowerCase() === optValue.trim().toLowerCase();
 
         return (
-          <label
+          <button
             key={optValue + "-" + index}
+            type="button"
+            role="radio"
+            aria-checked={isSelected}
             onClick={() => onChange(optValue)}
-            className={`flex items-center gap-3 rounded-2xl border px-4 py-3 cursor-pointer transition select-none ${
+            className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition cursor-pointer select-none ${
               isSelected
-                ? "border-primary-500 bg-primary-50 dark:bg-primary-950/80 ring-2 ring-primary-500/30"
+                ? "border-primary-500 bg-primary-50 dark:bg-primary-950/80 ring-2 ring-primary-500/30 shadow-xs"
                 : "border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-gray-300 dark:hover:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800/60"
             }`}
           >
-            <input
-              type="radio"
-              name={name}
-              value={optValue}
-              checked={isSelected}
-              onChange={() => onChange(optValue)}
-              className="sr-only"
-            />
             <div
-              className={`w-4.5 h-4.5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
+              className={`w-[18px] h-[18px] rounded-full border-2 flex items-center justify-center shrink-0 transition ${
                 isSelected
-                  ? "border-primary-600"
+                  ? "border-primary-600 bg-white dark:bg-slate-900"
                   : "border-gray-300 dark:border-slate-600"
               }`}
             >
               {isSelected && (
-                <div className="w-2 h-2 rounded-full bg-primary-600" />
+                <div className="w-2.5 h-2.5 rounded-full bg-primary-600" />
               )}
             </div>
-            <span className="text-sm font-medium text-gray-900 dark:text-slate-100 select-none">
+            <span
+              className={`text-sm font-medium ${
+                isSelected
+                  ? "text-primary-900 dark:text-primary-100 font-bold"
+                  : "text-gray-900 dark:text-slate-100"
+              }`}
+            >
               {optLabel}
             </span>
-          </label>
+          </button>
         );
       })}
     </div>
   );
 }
 
-function MultiSelect({ value, onChange, options, name = "onboarding_multi_select" }) {
-  const selected = value ? value.split(", ").filter(Boolean) : [];
+function MultiSelect({ value, onChange, options }) {
+  const selectedList = Array.isArray(value)
+    ? value.map(String)
+    : typeof value === "string" && value.trim()
+    ? value.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
 
   const toggle = (optValue) => {
-    const next = selected.includes(optValue)
-      ? selected.filter((s) => s !== optValue)
-      : [...selected, optValue];
+    const norm = optValue.trim().toLowerCase();
+    const exists = selectedList.some((s) => s.trim().toLowerCase() === norm);
+    let next;
+    if (exists) {
+      next = selectedList.filter((s) => s.trim().toLowerCase() !== norm);
+    } else {
+      next = [...selectedList, optValue.trim()];
+    }
     onChange(next.join(", "));
   };
 
@@ -135,32 +147,25 @@ function MultiSelect({ value, onChange, options, name = "onboarding_multi_select
           typeof opt === "object" && opt !== null
             ? String(opt.label ?? opt.text ?? opt.value ?? opt.id ?? optValue)
             : String(opt);
-        const isSelected = selected.includes(optValue);
+        const isSelected = selectedList.some(
+          (s) => s.trim().toLowerCase() === optValue.trim().toLowerCase()
+        );
 
         return (
-          <label
+          <button
             key={optValue + "-" + index}
-            onClick={(e) => {
-              if (e.target.tagName !== "INPUT") {
-                toggle(optValue);
-              }
-            }}
-            className={`flex items-center gap-3 rounded-2xl border px-4 py-3 cursor-pointer transition select-none ${
+            type="button"
+            role="checkbox"
+            aria-checked={isSelected}
+            onClick={() => toggle(optValue)}
+            className={`w-full flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition cursor-pointer select-none ${
               isSelected
-                ? "border-primary-500 bg-primary-50 dark:bg-primary-950/80 ring-2 ring-primary-500/30"
+                ? "border-primary-500 bg-primary-50 dark:bg-primary-950/80 ring-2 ring-primary-500/30 shadow-xs"
                 : "border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-gray-300 dark:hover:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800/60"
             }`}
           >
-            <input
-              type="checkbox"
-              name={name}
-              value={optValue}
-              checked={isSelected}
-              onChange={() => toggle(optValue)}
-              className="sr-only"
-            />
             <div
-              className={`w-4.5 h-4.5 rounded-md flex items-center justify-center border-2 shrink-0 transition ${
+              className={`w-[18px] h-[18px] rounded-md flex items-center justify-center border-2 shrink-0 transition ${
                 isSelected
                   ? "border-primary-600 bg-primary-600"
                   : "border-gray-300 dark:border-slate-600"
@@ -182,10 +187,16 @@ function MultiSelect({ value, onChange, options, name = "onboarding_multi_select
                 </svg>
               )}
             </div>
-            <span className="text-sm font-medium text-gray-900 dark:text-slate-100 select-none">
+            <span
+              className={`text-sm font-medium ${
+                isSelected
+                  ? "text-primary-900 dark:text-primary-100 font-bold"
+                  : "text-gray-900 dark:text-slate-100"
+              }`}
+            >
               {optLabel}
             </span>
-          </label>
+          </button>
         );
       })}
     </div>
@@ -280,6 +291,11 @@ function CompletionSummary({ question, profile, onContinue }) {
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const { theme, toggleTheme } = useThemeStore();
+  const { user, setUser } = useAuthStore();
+
+  // Use a ref to access current user in callbacks without re-render dependency
+  const userRef = useRef(user);
+  useEffect(() => { userRef.current = user; }, [user]);
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -290,32 +306,42 @@ export default function OnboardingPage() {
   const [isComplete, setIsComplete] = useState(false);
   const [profile, setProfile] = useState({});
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      try {
-        setLoading(true);
-        setError("");
-        const state = await startOnboarding();
-        if (cancelled) return;
-
-        setIsComplete(state.is_complete);
+  const loadState = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
+      const state = await startOnboarding();
+      if (state.is_complete) {
+        setIsComplete(true);
+        setQuestionsAnswered(state.questions_answered || 0);
+        setCurrentQuestion(null);
+        setProfile(state.profile || {});
+        setUser({ ...(userRef.current || {}), onboarding_complete: true, profile: state.profile || {} });
+      } else {
+        setIsComplete(false);
         setQuestionsAnswered(state.questions_answered || 0);
         setCurrentQuestion(state.current_question);
         setProfile(state.profile || {});
-      } catch (err) {
-        if (!cancelled) setError(err.message || "Failed to start onboarding.");
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+    } catch (err) {
+      setError(
+        err.response?.status === 503 || err.response?.status === 402
+          ? "Nutri is temporarily unavailable right now. Please try again shortly."
+          : err.message || "Failed to start onboarding. Please try again."
+      );
+    } finally {
+      setLoading(false);
     }
+  }, [setUser]);
 
-    init();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  useEffect(() => {
+    loadState();
+  }, [loadState]);
+
+  // Reset answer when a new question arrives
+  useEffect(() => {
+    setAnswer("");
+  }, [currentQuestion?.id]);
 
   const handleSubmit = useCallback(async () => {
     if (!answer.trim()) return;
@@ -325,17 +351,31 @@ export default function OnboardingPage() {
       setError("");
       const result = await submitAnswer(answer.trim());
 
+      // Only clear answer on success
       setAnswer("");
-      setIsComplete(result.is_complete);
-      setQuestionsAnswered(result.questions_answered || 0);
-      setCurrentQuestion(result.current_question);
-      setProfile(result.profile || {});
+      if (result.is_complete) {
+        setIsComplete(true);
+        setQuestionsAnswered(result.questions_answered || 0);
+        setCurrentQuestion(null);
+        setProfile(result.profile || {});
+        setUser({ ...(userRef.current || {}), onboarding_complete: true, profile: result.profile || {} });
+      } else {
+        setIsComplete(false);
+        setQuestionsAnswered(result.questions_answered || 0);
+        setCurrentQuestion(result.current_question);
+        setProfile(result.profile || {});
+      }
     } catch (err) {
-      setError(err.message || "Failed to submit answer.");
+      // Preserve current answer in state, do not navigate away, and display a helpful message
+      const friendlyMsg =
+        err.response?.status === 503 || err.response?.status === 402
+          ? "Nutri is temporarily unavailable right now. Your answer is saved — please try again."
+          : err.message || "Nutri is temporarily unavailable right now. Your answer is saved — please try again.";
+      setError(friendlyMsg);
     } finally {
       setSubmitting(false);
     }
-  }, [answer]);
+  }, [answer, setUser]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -392,11 +432,23 @@ export default function OnboardingPage() {
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl border border-gray-200 dark:border-slate-800 p-6 sm:p-8">
           {error && (
             <div
-              className="mb-6 rounded-2xl bg-danger-50 dark:bg-danger-950/40 border border-danger-500/30 p-4 text-sm text-danger-600 dark:text-danger-400 flex items-start gap-2.5"
+              className="mb-6 rounded-2xl bg-danger-50 dark:bg-danger-950/40 border border-danger-500/30 p-4 text-sm text-danger-600 dark:text-danger-400 flex items-start justify-between gap-3 shadow-xs"
               role="alert"
             >
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+              {currentQuestion && (
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={submitting || !answer.trim()}
+                  className="text-xs font-bold underline hover:no-underline cursor-pointer shrink-0 disabled:opacity-50"
+                >
+                  Retry
+                </button>
+              )}
             </div>
           )}
 
@@ -409,11 +461,30 @@ export default function OnboardingPage() {
             </div>
           )}
 
+          {!loading && !isComplete && !currentQuestion && error && (
+            <div className="text-center py-8 space-y-4">
+              <p className="text-sm text-gray-600 dark:text-slate-300 font-medium">
+                Nutri was unable to reach the AI service. Please try again.
+              </p>
+              <button
+                onClick={loadState}
+                className="px-5 py-2.5 rounded-2xl bg-primary-600 hover:bg-primary-700 text-white font-bold text-sm transition cursor-pointer"
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+
           {!loading && isComplete && (
             <CompletionSummary
               question={currentQuestion}
               profile={profile}
-              onContinue={() => navigate("/dashboard")}
+              onContinue={() => {
+                if (setUser) {
+                  setUser({ ...(user || {}), onboarding_complete: true, profile: profile || {} });
+                }
+                navigate("/dashboard");
+              }}
             />
           )}
 

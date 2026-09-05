@@ -34,4 +34,6 @@ class UserInDB:
         self.onboarding_complete: bool = doc.get("onboarding_complete", False)
         self.profile: dict = doc.get("profile", {})
         self.conversation_history: list[dict] = doc.get("conversation_history", [])
+        self.meal_schedule: dict = doc.get("meal_schedule", {})
+        self.timezone: str = doc.get("timezone", "UTC")
         self.created_at: datetime = doc.get("created_at", datetime.min)

@@ -18,7 +18,7 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
-import Navbar from "../components/Navbar";
+import AppLayout from "../layouts/AppLayout";
 import { getTodayTracking, logFood, deleteFoodLog, logWater } from "../services/trackingService";
 
 export default function AnalyticsPage() {
@@ -91,10 +91,11 @@ export default function AnalyticsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
-      <Navbar />
-
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <AppLayout
+      title="Analytics & Tracking"
+      subtitle="Track your macros, food entries, and nutrition consistency score"
+    >
+      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -571,7 +572,7 @@ export default function AnalyticsPage() {
             </div>
           </div>
         </div>
-      </main>
-    </div>
+      </div>
+    </AppLayout>
   );
 }

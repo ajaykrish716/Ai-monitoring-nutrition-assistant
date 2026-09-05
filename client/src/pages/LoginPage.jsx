@@ -34,6 +34,7 @@ export default function LoginPage() {
   const [serverError, setServerError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const isExpired = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("expired") === "1";
 
   const {
     register,
@@ -157,6 +158,16 @@ export default function LoginPage() {
               Sign in to continue your personalized nutrition journey
             </p>
           </div>
+
+          {isExpired && !serverError && (
+            <div
+              className="rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-500/30 p-4 text-sm text-amber-800 dark:text-amber-300 flex items-center gap-3"
+              role="status"
+            >
+              <ShieldCheck className="w-5 h-5 text-amber-500 shrink-0" />
+              <span>Your previous login session has expired. Please sign in again to continue.</span>
+            </div>
+          )}
 
           {serverError && (
             <div

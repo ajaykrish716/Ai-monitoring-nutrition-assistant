@@ -22,10 +22,9 @@ import {
   Trash2,
   Power,
   Clock,
-  Shield,
   Layers,
 } from "lucide-react";
-import Navbar from "../components/Navbar";
+import AppLayout from "../layouts/AppLayout";
 import ActivityCalendar from "../components/ActivityCalendar";
 import useAuthStore from "../store/authStore";
 import api from "../services/api";
@@ -36,6 +35,11 @@ import {
   updateUserGoal,
   deleteUserGoal,
 } from "../services/authService";
+import {
+  getMealSchedule,
+  updateMealTiming,
+  updateUserTimezone,
+} from "../services/mealScheduleService";
 
 export default function ProfilePage() {
   const { user, setUser } = useAuthStore();
@@ -46,12 +50,24 @@ export default function ProfilePage() {
   const [activityData, setActivityData] = useState(null);
   const [trackingData, setTrackingData] = useState(null);
   const [goals, setGoals] = useState([]);
+  const [mealSchedule, setMealSchedule] = useState(null);
 
   // Modals state
   const [editProfileOpen, setEditProfileOpen] = useState(false);
   const [addGoalOpen, setAddGoalOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null); // Goal object when editing
+  const [editMealTimingOpen, setEditMealTimingOpen] = useState(false);
+  const [editTimezoneOpen, setEditTimezoneOpen] = useState(false);
+  const [editingMealKey, setEditingMealKey] = useState("breakfast");
+  const [timingValidationError, setTimingValidationError] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Meal timing form state
+  const [mealTimingForm, setMealTimingForm] = useState({
+    window_start: "08:00",
+    window_end: "10:00",
+  });
+  const [timezoneForm, setTimezoneForm] = useState("UTC");
 
   // Form states for Edit Profile
   const [profileForm, setProfileForm] = useState({
@@ -67,15 +83,31 @@ export default function ProfilePage() {
   const [goalDescForm, setGoalDescForm] = useState("");
   const [goalPriorityForm, setGoalPriorityForm] = useState("");
 
+  const formatTime12h = (timeStr) => {
+    if (!timeStr) return "";
+    try {
+      const [h, m] = timeStr.split(":");
+      const hour = parseInt(h, 10);
+      const minute = m || "00";
+      if (hour === 0) return `12:${minute} AM`;
+      if (hour < 12) return `${hour}:${minute} AM`;
+      if (hour === 12) return `12:${minute} PM`;
+      return `${hour - 12}:${minute} PM`;
+    } catch (e) {
+      return timeStr;
+    }
+  };
+
   const loadProfileData = async () => {
     try {
       setLoading(true);
       setError("");
-      const [actRes, trackRes, meRes, goalsRes] = await Promise.all([
+      const [actRes, trackRes, meRes, goalsRes, scheduleRes] = await Promise.all([
         api.get("/tracking/activity-calendar"),
         api.get("/tracking/today"),
         api.get("/auth/me"),
         getUserGoals(),
+        getMealSchedule().catch(() => null),
       ]);
       setActivityData(actRes.data);
       setTrackingData(trackRes.data);
@@ -83,6 +115,7 @@ export default function ProfilePage() {
         setUser(meRes.data);
       }
       setGoals(goalsRes || []);
+      setMealSchedule(scheduleRes);
     } catch (err) {
       setError(err.message || "Failed to load profile details.");
     } finally {
@@ -93,6 +126,90 @@ export default function ProfilePage() {
   useEffect(() => {
     loadProfileData();
   }, []);
+
+  const handleOpenEditMealTiming = (mealKey) => {
+    setEditingMealKey(mealKey);
+    const current = mealSchedule?.[mealKey] || {
+      window_start: mealKey === "breakfast" ? "08:00" : mealKey === "lunch" ? "12:30" : "19:00",
+      window_end: mealKey === "breakfast" ? "10:00" : mealKey === "lunch" ? "14:30" : "21:00",
+    };
+    setMealTimingForm({
+      window_start: current.window_start || (mealKey === "breakfast" ? "08:00" : mealKey === "lunch" ? "12:30" : "19:00"),
+      window_end: current.window_end || (mealKey === "breakfast" ? "10:00" : mealKey === "lunch" ? "14:30" : "21:00"),
+    });
+    setTimingValidationError("");
+    setEditMealTimingOpen(true);
+  };
+
+  const handleSaveMealTiming = async (e) => {
+    e.preventDefault();
+    setTimingValidationError("");
+
+    const toMins = (t) => {
+      if (!t || !t.includes(":")) return -1;
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+
+    const wsMins = toMins(mealTimingForm.window_start);
+    const weMins = toMins(mealTimingForm.window_end);
+
+    if (wsMins < 0 || weMins < 0) {
+      setTimingValidationError("Please provide valid times in HH:MM format.");
+      return;
+    }
+
+    if (wsMins >= weMins) {
+      setTimingValidationError(
+        `Window start (${formatTime12h(mealTimingForm.window_start)}) must be before window end (${formatTime12h(mealTimingForm.window_end)}).`
+      );
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setError("");
+      const updated = await updateMealTiming({
+        meal_type: editingMealKey,
+        window_start: mealTimingForm.window_start,
+        window_end: mealTimingForm.window_end,
+        enabled: true,
+      });
+      setMealSchedule(updated);
+      setEditMealTimingOpen(false);
+      setSuccessToast(
+        `${editingMealKey.charAt(0).toUpperCase() + editingMealKey.slice(1)} timing updated successfully!`
+      );
+      setTimeout(() => setSuccessToast(""), 5000);
+    } catch (err) {
+      setTimingValidationError(err.message || "Failed to update meal timing.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleOpenEditTimezone = () => {
+    setTimezoneForm(mealSchedule?.timezone || user?.timezone || "UTC");
+    setEditTimezoneOpen(true);
+  };
+
+  const handleSaveTimezone = async (e) => {
+    e.preventDefault();
+    try {
+      setSaving(true);
+      setError("");
+      await updateUserTimezone(timezoneForm);
+      setMealSchedule((prev) => ({ ...(prev || {}), timezone: timezoneForm }));
+      setUser({ ...(user || {}), timezone: timezoneForm });
+      setEditTimezoneOpen(false);
+      setSuccessToast(`Timezone updated to ${timezoneForm}!`);
+      setTimeout(() => setSuccessToast(""), 5000);
+    } catch (err) {
+      setError(err.message || "Failed to update timezone.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleOpenEditProfile = () => {
     setProfileForm({
@@ -227,10 +344,11 @@ export default function ProfilePage() {
   const activeGoalsCount = goals.filter((g) => g.status === "active").length;
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-slate-950 flex flex-col font-sans transition-colors">
-      <Navbar />
-
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <AppLayout
+      title="Profile & Goals"
+      subtitle="Manage your metrics, multiple simultaneous focus goals, and meal schedule"
+    >
+      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Success Toast */}
         {successToast && (
           <div className="rounded-2xl bg-primary-50 dark:bg-slate-900 border border-primary-300 dark:border-primary-800 p-4 text-sm text-primary-900 dark:text-primary-300 flex items-center justify-between shadow-md animate-in fade-in slide-in-from-top-2">
@@ -312,7 +430,7 @@ export default function ProfilePage() {
         <section className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-200 dark:border-slate-800 p-6 shadow-xs space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-slate-800">
             <h2 className="text-base font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
-              <User className="w-4.5 h-4.5 text-primary-600" />
+              <User className="w-[18px] h-[18px] text-primary-600" />
               Basic Health Metrics
             </h2>
             <button
@@ -351,6 +469,149 @@ export default function ProfilePage() {
               <p className="text-lg font-extrabold text-gray-900 dark:text-slate-100 mt-0.5">
                 {user?.current_weight ? `${user.current_weight} kg` : "—"}
               </p>
+            </div>
+          </div>
+        </section>
+
+        {/* 2.5. MEAL SCHEDULE & TIME WINDOWS */}
+        <section className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-200 dark:border-slate-800 p-6 sm:p-7 shadow-xs space-y-5 transition-colors">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100 dark:border-slate-800">
+            <div>
+              <h2 className="text-lg font-extrabold text-gray-900 dark:text-white flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary-600" />
+                Meal Schedule & Time Windows
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                Configure your scheduled meal times and allowed logging windows. Scoring tapers smoothly between reduction start and window end.
+              </p>
+            </div>
+
+            <button
+              onClick={handleOpenEditTimezone}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 text-xs font-bold transition cursor-pointer self-start sm:self-auto"
+            >
+              <span>Timezone:</span>
+              <span className="text-primary-600 dark:text-primary-400 font-extrabold">
+                {mealSchedule?.timezone || user?.timezone || "UTC"}
+              </span>
+              <Edit3 className="w-3 h-3 text-gray-400" />
+            </button>
+          </div>
+
+          {/* 3 Primary Meals Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Breakfast Card */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-gray-50/80 dark:bg-slate-950/80 border border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between space-y-4 hover:border-primary-300 dark:hover:border-primary-700 transition">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">🍳</span>
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-slate-100">Breakfast</h3>
+                  </div>
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded-full border border-emerald-300 dark:border-emerald-800">
+                    Active
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs text-gray-600 dark:text-slate-300">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window Start:</span>
+                    <span className="font-extrabold text-gray-900 dark:text-slate-100">
+                      {formatTime12h(mealSchedule?.breakfast?.window_start || "08:00")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window End:</span>
+                    <span className="font-semibold text-rose-600 dark:text-rose-400">
+                      {formatTime12h(mealSchedule?.breakfast?.window_end || "10:00")}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleOpenEditMealTiming("breakfast")}
+                className="w-full py-2 px-3 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-900 text-xs font-bold text-gray-700 dark:text-slate-200 flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
+                <span>Edit Breakfast Timing</span>
+              </button>
+            </div>
+
+            {/* Lunch Card */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-gray-50/80 dark:bg-slate-950/80 border border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between space-y-4 hover:border-primary-300 dark:hover:border-primary-700 transition">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">🍛</span>
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-slate-100">Lunch</h3>
+                  </div>
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded-full border border-emerald-300 dark:border-emerald-800">
+                    Active
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs text-gray-600 dark:text-slate-300">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window Start:</span>
+                    <span className="font-extrabold text-gray-900 dark:text-slate-100">
+                      {formatTime12h(mealSchedule?.lunch?.window_start || "12:30")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window End:</span>
+                    <span className="font-semibold text-rose-600 dark:text-rose-400">
+                      {formatTime12h(mealSchedule?.lunch?.window_end || "14:30")}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleOpenEditMealTiming("lunch")}
+                className="w-full py-2 px-3 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-900 text-xs font-bold text-gray-700 dark:text-slate-200 flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
+                <span>Edit Lunch Timing</span>
+              </button>
+            </div>
+
+            {/* Dinner Card */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-gray-50/80 dark:bg-slate-950/80 border border-gray-200/80 dark:border-slate-800/80 flex flex-col justify-between space-y-4 hover:border-primary-300 dark:hover:border-primary-700 transition">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">🍽️</span>
+                    <h3 className="text-sm font-bold text-gray-900 dark:text-slate-100">Dinner</h3>
+                  </div>
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded-full border border-emerald-300 dark:border-emerald-800">
+                    Active
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs text-gray-600 dark:text-slate-300">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window Start:</span>
+                    <span className="font-extrabold text-gray-900 dark:text-slate-100">
+                      {formatTime12h(mealSchedule?.dinner?.window_start || "19:00")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500 dark:text-slate-400">Window End:</span>
+                    <span className="font-semibold text-rose-600 dark:text-rose-400">
+                      {formatTime12h(mealSchedule?.dinner?.window_end || "21:00")}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleOpenEditMealTiming("dinner")}
+                className="w-full py-2 px-3 rounded-xl border border-gray-200 dark:border-slate-700 hover:bg-white dark:hover:bg-slate-900 text-xs font-bold text-gray-700 dark:text-slate-200 flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-primary-600 dark:text-primary-400" />
+                <span>Edit Dinner Timing</span>
+              </button>
             </div>
           </div>
         </section>
@@ -560,7 +821,7 @@ export default function ProfilePage() {
         ) : (
           <ActivityCalendar activityData={activityData} />
         )}
-      </main>
+      </div>
 
       {/* Edit Profile Metrics Modal */}
       {editProfileOpen && (
@@ -858,6 +1119,184 @@ export default function ProfilePage() {
           </div>
         </div>
       )}
-    </div>
+
+      {/* Edit Meal Timing Modal */}
+      {editMealTimingOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-gray-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary-600" />
+                Edit {editingMealKey.charAt(0).toUpperCase() + editingMealKey.slice(1)} Timing
+              </h3>
+              <button
+                onClick={() => setEditMealTimingOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {timingValidationError && (
+              <div className="rounded-2xl bg-danger-50 dark:bg-danger-950/40 border border-danger-500/20 p-3.5 text-xs text-danger-600 dark:text-danger-400 flex items-start gap-2.5 shadow-xs">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex-1 font-semibold">{timingValidationError}</div>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveMealTiming} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
+                  Logging Window Start (24h)
+                </label>
+                <input
+                  type="time"
+                  required
+                  value={mealTimingForm.window_start}
+                  onChange={(e) =>
+                    setMealTimingForm({ ...mealTimingForm, window_start: e.target.value })
+                  }
+                  className="w-full rounded-2xl border border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <p className="text-[11px] text-gray-400 dark:text-slate-500 mt-1">
+                  When this meal window opens for logging.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
+                  Logging Window End (24h)
+                </label>
+                <input
+                  type="time"
+                  required
+                  value={mealTimingForm.window_end}
+                  onChange={(e) =>
+                    setMealTimingForm({ ...mealTimingForm, window_end: e.target.value })
+                  }
+                  className="w-full rounded-2xl border border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+                />
+                <p className="text-[11px] text-gray-400 dark:text-slate-500 mt-1">
+                  When this meal window closes. Logging after this time is blocked.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 text-[11px] text-gray-500 dark:text-slate-400 space-y-1">
+                <p className="font-bold text-gray-700 dark:text-slate-300">Timing Rule:</p>
+                <p>• Window Start ({formatTime12h(mealTimingForm.window_start)}) must be before Window End ({formatTime12h(mealTimingForm.window_end)}).</p>
+                <p>• Logging is only permitted when the meal window is AVAILABLE.</p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditMealTimingOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex items-center gap-2 px-5 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm font-bold rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Saving…
+                    </>
+                  ) : (
+                    "Save Timing"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Timezone Modal */}
+      {editTimezoneOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full p-6 shadow-2xl border border-gray-200 dark:border-slate-800 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary-600" />
+                Select Timezone
+              </h3>
+              <button
+                onClick={() => setEditTimezoneOpen(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveTimezone} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
+                  Common Timezones
+                </label>
+                <select
+                  value={timezoneForm}
+                  onChange={(e) => setTimezoneForm(e.target.value)}
+                  className="w-full rounded-2xl border border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value="UTC">UTC (Coordinated Universal Time)</option>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST +5:30)</option>
+                  <option value="America/New_York">America/New_York (EST/EDT)</option>
+                  <option value="America/Chicago">America/Chicago (CST/CDT)</option>
+                  <option value="America/Denver">America/Denver (MST/MDT)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (PST/PDT)</option>
+                  <option value="Europe/London">Europe/London (GMT/BST)</option>
+                  <option value="Europe/Paris">Europe/Paris (CET/CEST)</option>
+                  <option value="Asia/Dubai">Asia/Dubai (GST +4:00)</option>
+                  <option value="Asia/Singapore">Asia/Singapore (SGT +8:00)</option>
+                  <option value="Asia/Tokyo">Asia/Tokyo (JST +9:00)</option>
+                  <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-slate-300 mb-1">
+                  Custom IANA Timezone
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Europe/Berlin, Asia/Bangkok"
+                  value={timezoneForm}
+                  onChange={(e) => setTimezoneForm(e.target.value)}
+                  className="w-full rounded-2xl border border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-950 px-3.5 py-2 text-sm text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditTimezoneOpen(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || !timezoneForm.trim()}
+                  className="flex items-center gap-2 px-5 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm font-bold rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Saving…
+                    </>
+                  ) : (
+                    "Save Timezone"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </AppLayout>
   );
 }

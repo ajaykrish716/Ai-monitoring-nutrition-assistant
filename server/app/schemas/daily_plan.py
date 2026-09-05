@@ -13,6 +13,7 @@ class MacroNutrition(BaseModel):
     protein: float = Field(default=0.0, ge=0, description="Protein in grams")
     carbohydrates: float = Field(default=0.0, ge=0, description="Carbohydrates in grams")
     fat: float = Field(default=0.0, ge=0, description="Fat in grams")
+    fiber: float = Field(default=0.0, ge=0, description="Fiber in grams")
 
 
 class DailyTargets(BaseModel):
@@ -22,18 +23,22 @@ class DailyTargets(BaseModel):
     protein: float = Field(default=100.0, ge=0)
     carbohydrates: float = Field(default=220.0, ge=0)
     fat: float = Field(default=65.0, ge=0)
+    fiber: float = Field(default=30.0, ge=0, description="Target fiber in grams")
     water_ml: float = Field(default=2500.0, ge=0, description="Target water intake in ml")
 
 
 class MealItem(BaseModel):
-    """Individual meal in the daily plan."""
+    """Individual meal in the daily plan (Breakfast, Lunch, or Dinner only - NO SNACKS)."""
 
-    meal_type: str = Field(..., description="e.g. Breakfast, Lunch, Dinner, Snack")
+    meal_type: str = Field(..., description="Breakfast, Lunch, or Dinner")
     name: str = Field(..., description="Meal title / recipe name")
     foods: list[str] = Field(default_factory=list, description="Key food items")
     portion_information: str = Field(default="", description="Portion sizes and measurements")
     nutrition: MacroNutrition = Field(default_factory=MacroNutrition)
     notes: str = Field(default="", description="Preparation notes, timing, or personalized rationale")
+    window_start: str | None = Field(default=None, description="Window start HH:MM")
+    window_end: str | None = Field(default=None, description="Window end HH:MM")
+    timing_state: str | None = Field(default=None, description="upcoming | available | completed | window_closed")
 
 
 class PhysicalActivityItem(BaseModel):
@@ -55,5 +60,7 @@ class DailyPlanResponse(BaseModel):
     daily_targets: DailyTargets = Field(default_factory=DailyTargets)
     meals: list[MealItem] = Field(default_factory=list)
     physical_activities: list[PhysicalActivityItem] = Field(default_factory=list)
+    meal_schedule: dict | None = Field(default=None, description="User's meal schedule settings")
+    timezone: str | None = Field(default=None, description="User timezone")
     created_at: datetime | None = None
     updated_at: datetime | None = None

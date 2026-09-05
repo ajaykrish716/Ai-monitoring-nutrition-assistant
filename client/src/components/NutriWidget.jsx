@@ -17,8 +17,16 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronRight,
+  Clock,
 } from "lucide-react";
-import { interactWithNutri } from "../services/nutriService";
+import { interactWithNutri, getNutriHistory } from "../services/nutriService";
+
+const DEFAULT_WELCOME_MSG = {
+  role: "assistant",
+  content:
+    "Hi there! 👋 I'm Nutri, your personal nutrition companion. I'm here to help you review food logs, find budget-friendly swaps, adjust today's meals, and stay nourished without stress! What would you like help with today?",
+  timestamp: new Date().toISOString(),
+};
 
 export default function NutriWidget({
   tracking,
@@ -28,20 +36,32 @@ export default function NutriWidget({
   externalPrompt,
   onClearExternalPrompt,
 }) {
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content:
-        "Hi there! 👋 I'm Nutri, your nutrition companion. I'm here to help you adjust today's meals, find budget-friendly swaps, review your food choices, and stay nourished without stress! What do you need today?",
-      timestamp: new Date().toISOString(),
-    },
-  ]);
+  const [messages, setMessages] = useState([DEFAULT_WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lastPlanMod, setLastPlanMod] = useState(null);
 
   const chatContainerRef = useRef(null);
+
+  // Load persistent conversation history on mount
+  useEffect(() => {
+    let isMounted = true;
+    async function loadHistory() {
+      try {
+        const data = await getNutriHistory();
+        if (isMounted && data?.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+        }
+      } catch (err) {
+        console.warn("Could not load Nutri chat history:", err);
+      }
+    }
+    loadHistory();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const quickPrompts = [
     {
@@ -66,7 +86,17 @@ export default function NutriWidget({
     },
   ];
 
-  // Internal auto-scroll ONLY on the internal chat container
+  const formatMsgTime = (ts) => {
+    if (!ts) return "";
+    try {
+      const d = new Date(ts);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  };
+
+  // Internal auto-scroll ONLY on the internal chat container without scrolling the window
   const scrollToBottom = () => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({
@@ -230,6 +260,13 @@ export default function NutriWidget({
                     <span className="font-bold block">✨ Applied Plan Change:</span>
                     {msg.plan_modification.meal_type} →{" "}
                     {msg.plan_modification.replacement_meal?.name}
+                  </div>
+                )}
+
+                {msg.timestamp && (
+                  <div className={`flex items-center gap-1 mt-1 text-[10px] ${isUser ? "justify-end text-primary-100" : "justify-start text-gray-400 dark:text-slate-500"}`}>
+                    <Clock className="w-2.5 h-2.5 opacity-70" />
+                    <span>{formatMsgTime(msg.timestamp)}</span>
                   </div>
                 )}
               </div>

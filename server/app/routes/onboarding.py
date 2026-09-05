@@ -12,7 +12,12 @@ from app.schemas.onboarding import (
     OnboardingAnswer,
     OnboardingStateResponse,
 )
-from app.services.ai_service import AIServiceError
+from app.services.ai_service import (
+    AIServiceError,
+    AICreditLimitError,
+    AIRateLimitError,
+    AIAuthenticationError,
+)
 from app.services.auth_service import get_current_user
 from app.services.onboarding_service import (
     get_onboarding_state,
@@ -21,6 +26,29 @@ from app.services.onboarding_service import (
 )
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
+
+
+def _handle_ai_error(exc: AIServiceError) -> HTTPException:
+    """Map AI service exceptions to appropriate HTTP status codes and safe messages."""
+    if isinstance(exc, AICreditLimitError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable because the configured AI credit limit has been reached. Please try again later.",
+        )
+    elif isinstance(exc, AIRateLimitError):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="AI service rate limit reached. Please wait a moment and try again.",
+        )
+    elif isinstance(exc, AIAuthenticationError):
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI service authentication failed. Please verify provider credentials.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=str(exc) or "AI service is temporarily unavailable. Please try again.",
+    )
 
 
 @router.post(
@@ -39,10 +67,7 @@ async def start(current_user: UserInDB = Depends(get_current_user)):
         result = await start_onboarding(current_user.id)
         return result
     except AIServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        )
+        raise _handle_ai_error(exc)
 
 
 @router.post(
@@ -63,10 +88,7 @@ async def answer(
         result = await process_answer(current_user.id, payload.answer)
         return result
     except AIServiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        )
+        raise _handle_ai_error(exc)
 
 
 @router.get(

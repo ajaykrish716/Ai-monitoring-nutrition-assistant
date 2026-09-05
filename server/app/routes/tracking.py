@@ -51,6 +51,12 @@ async def get_today_tracking(
     status_code=status.HTTP_201_CREATED,
     summary="Log a meal or food item using free-text or structured description",
 )
+@router.post(
+    "/meal-logs",
+    response_model=FoodLogEntry,
+    status_code=status.HTTP_201_CREATED,
+    summary="Log a meal or food item (alias)",
+)
 async def log_food(
     payload: LogFoodRequest,
     current_user: UserInDB = Depends(get_current_user),
@@ -61,6 +67,11 @@ async def log_food(
     try:
         entry = await log_food_item(current_user.id, payload)
         return entry
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

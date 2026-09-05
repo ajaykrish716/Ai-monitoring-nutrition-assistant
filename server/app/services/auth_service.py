@@ -18,6 +18,8 @@ from app.core.security import (
 from app.db.mongodb import get_database
 from app.models.user import UserInDB
 from app.schemas.auth import UserRegister
+from app.services.meal_schedule_service import get_default_meal_schedule
+from app.schemas.meal_schedule import DEFAULT_TIMEZONE
 
 # ---------------------------------------------------------------------------
 # Bearer token extractor
@@ -75,6 +77,8 @@ async def create_user(payload: UserRegister) -> tuple[str, str]:
         "onboarding_complete": False,
         "profile": initial_facts,
         "conversation_history": [],
+        "meal_schedule": get_default_meal_schedule(),
+        "timezone": DEFAULT_TIMEZONE,
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -108,15 +112,17 @@ async def authenticate_user(email: str, password: str) -> UserInDB:
     return UserInDB(doc)
 
 
+from fastapi import Request
+from app.core.timezone_utils import validate_timezone_name
+
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ) -> UserInDB:
     """
     FastAPI dependency — extracts and validates the JWT from the
     ``Authorization: Bearer <token>`` header, then fetches the user
     from MongoDB.
-
-    The user's identity comes *only* from the verified JWT subject claim.
     """
     token = credentials.credentials
 
@@ -132,7 +138,7 @@ async def get_current_user(
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
+            detail="Your login session has expired. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.InvalidTokenError:
@@ -159,6 +165,18 @@ async def get_current_user(
             detail="User not found.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Auto-sync timezone if client provided X-Timezone and user is currently on default UTC
+    client_tz = request.headers.get("x-timezone")
+    if client_tz and validate_timezone_name(client_tz):
+        if doc.get("timezone") in ("UTC", None, ""):
+            doc["timezone"] = client_tz
+            await db.users.update_one({"_id": doc["_id"]}, {"$set": {"timezone": client_tz}})
+
+    if "meal_schedule" not in doc:
+        doc["meal_schedule"] = get_default_meal_schedule()
+    if "timezone" not in doc:
+        doc["timezone"] = DEFAULT_TIMEZONE
 
     return UserInDB(doc)
 
