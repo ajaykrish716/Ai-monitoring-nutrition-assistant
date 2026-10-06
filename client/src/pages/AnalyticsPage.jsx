@@ -17,27 +17,51 @@ import {
   AlertCircle,
   Loader2,
   Sparkles,
+  Camera,
 } from "lucide-react";
 import AppLayout from "../layouts/AppLayout";
 import { getTodayTracking, logFood, deleteFoodLog, logWater } from "../services/trackingService";
+import { getEvidenceSummary } from "../services/mealEvidenceService";
+import { getPlanProgress } from "../services/planProgressService";
+import NutritionPlanProgress from "../components/NutritionPlanProgress";
+import NutritionPlanCalendar from "../components/NutritionPlanCalendar";
+import ProgressReportCard from "../components/ProgressReportCard";
 
 export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [logging, setLogging] = useState(false);
   const [error, setError] = useState("");
   const [tracking, setTracking] = useState(null);
+  const [evidenceSummary, setEvidenceSummary] = useState(null);
+  const [planProgress, setPlanProgress] = useState(null);
 
   // Form State
   const [foodDescription, setFoodDescription] = useState("");
   const [mealType, setMealType] = useState("Breakfast");
   const [waterAmount, setWaterAmount] = useState(250);
 
+  // Helper: today's date as YYYY-MM-DD (local timezone)
+  const getTodayDateStr = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
   const fetchTrackingData = async () => {
     try {
       setLoading(true);
       setError("");
-      const data = await getTodayTracking();
+      const todayStr = getTodayDateStr();
+      const [data, evSummary, planData] = await Promise.all([
+        getTodayTracking(),
+        getEvidenceSummary(todayStr).catch(() => null),
+        getPlanProgress().catch(() => null),
+      ]);
       setTracking(data);
+      setEvidenceSummary(evSummary);
+      setPlanProgress(planData);
     } catch (err) {
       setError(err.message || "Failed to load tracking data.");
     } finally {
@@ -189,6 +213,88 @@ export default function AnalyticsPage() {
               {tracking?.goal_status?.message || "Keep logging!"}
             </p>
           </div>
+        </div>
+
+        {/* ── Meal Evidence Progress Section ── */}
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-200 dark:border-slate-800 p-5 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-base font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+              <Camera className="w-4.5 h-4.5 text-primary-600 dark:text-primary-400" />
+              Meal Evidence Progress
+            </h2>
+            <span className="text-xs text-gray-400 dark:text-slate-500">
+              Photo journal — personal record only
+            </span>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-slate-500">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading evidence summary…
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-5">
+              {/* Completion ring / percentage */}
+              <div className="flex flex-col items-center justify-center bg-primary-50 dark:bg-primary-950/60 rounded-2xl p-4 min-w-[110px] border border-primary-100 dark:border-primary-900">
+                <span className="text-3xl font-black text-primary-600 dark:text-primary-400">
+                  {evidenceSummary?.evidence_completion_pct ?? 0}%
+                </span>
+                <span className="text-[11px] text-primary-700 dark:text-primary-400 font-semibold mt-1">
+                  {evidenceSummary?.meals_with_evidence ?? 0} / {evidenceSummary?.total_suggested_meals ?? 3} meals
+                </span>
+                <span className="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5">
+                  Evidence uploaded
+                </span>
+              </div>
+
+              {/* Per-meal breakdown */}
+              <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                {["Breakfast", "Lunch", "Dinner"].map((meal) => {
+                  const hasEvidence = evidenceSummary?.meal_breakdown?.[meal] === true;
+                  return (
+                    <div
+                      key={meal}
+                      className={`flex items-center gap-2.5 p-3 rounded-2xl border text-xs font-semibold transition ${
+                        hasEvidence
+                          ? "bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300"
+                          : "bg-gray-50 dark:bg-slate-950 border-gray-200 dark:border-slate-800 text-gray-500 dark:text-slate-400"
+                      }`}
+                    >
+                      {hasEvidence ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      ) : (
+                        <Camera className="w-4 h-4 shrink-0 opacity-40" />
+                      )}
+                      <div>
+                        <p className="font-bold">{meal}</p>
+                        <p className="text-[10px] font-normal opacity-70">
+                          {hasEvidence ? "Evidence added" : "No evidence yet"}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Progress bar */}
+              <div className="sm:hidden w-full">
+                <div className="flex justify-between text-[11px] text-gray-500 mb-1">
+                  <span>Overall completion</span>
+                  <span className="font-bold">{evidenceSummary?.evidence_completion_pct ?? 0}%</span>
+                </div>
+                <div className="w-full bg-gray-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-primary-600 h-full rounded-full transition-all duration-500"
+                    style={{ width: `${evidenceSummary?.evidence_completion_pct ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-gray-400 dark:text-slate-500 mt-3">
+            Upload evidence photos from the Plan modal in the Dashboard. Photos are personal records only — no AI recognition is performed.
+          </p>
         </div>
 
         {/* Top Grid: Food Logger Form + Hydration Logger */}
@@ -571,6 +677,14 @@ export default function AnalyticsPage() {
               </div>
             </div>
           </div>
+          {/* ── NEW: Nutrition Plan Progress ── */}
+          <NutritionPlanProgress planData={planProgress} />
+
+          {/* ── Nutrition Plan Calendar ── */}
+          <NutritionPlanCalendar planData={planProgress} />
+
+          {/* ── Nutrition Progress Report ── */}
+          <ProgressReportCard planData={planProgress} />
         </div>
       </div>
     </AppLayout>

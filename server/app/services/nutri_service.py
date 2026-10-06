@@ -1,15 +1,18 @@
 """
-Dedicated Nutri AI Companion Service.
+Dedicated Nutri AI Companion Service — v2 (context-aware, intent-driven).
 
 Nutri is the user's ongoing nutrition partner:
-- Automatically reviews every logged meal with constructive, friendly feedback.
-- Explains nutritional progress and provides practical tips.
-- Dynamically modifies today's daily meal plan when requested (budget, dietary preference, ingredient availability).
-- Strictly respects allergies, medical context, and user targets without forcing recipe conformity.
+- Handles greetings, casual conversation, and short messages naturally.
+- Understands user intent from context, not just keywords.
+- Provides contextual quick-action suggestions after each response.
+- Dynamically modifies today's daily meal plan when requested.
+- Strictly respects allergies, medical context, and user targets.
+- Maintains conversation context so follow-ups like "yes", "change it", "something cheaper" work.
 """
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -18,6 +21,7 @@ from app.db.mongodb import get_database
 from app.schemas.daily_plan import DailyPlanResponse, MealItem, MacroNutrition
 from app.schemas.nutri import (
     NutriInteractResponse,
+    NutriSuggestion,
     PlanModificationDetail,
 )
 from app.services.ai_service import chat_completion
@@ -27,56 +31,142 @@ from app.services.meal_schedule_service import get_daily_meal_timing
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# System Prompt — Context-Aware AI Nutrition Companion
+# ---------------------------------------------------------------------------
+
 NUTRI_SYSTEM_PROMPT = """\
 You are "Nutri", the user's dedicated, friendly AI Nutrition Companion & Personal Wellness Partner on NutriTrack.
 
-CORE PHILOSOPHY:
-1. UNDERSTAND AND REASON ACROSS MULTIPLE ACTIVE GOALS:
-   - The user may have MULTIPLE simultaneous active goals (e.g., "Build muscle", "Keep meals affordable", "Support hair health", "Improve daily energy").
-   - You MUST understand how all their active goals connect. When discussing meals, adjustments, or nutrient focus, balance all their active priorities warmly and constructively.
-   - If the user asks to add, change, or prioritize a goal in conversation (e.g. "I want to add a muscle-building goal" or "Make budget my top priority"), acknowledge it encouragingly and explain how future meal plans and guidance will factor it in.
+═══════════════════════════════════════════════════════════
+PERSONA & MISSION
+═══════════════════════════════════════════════════════════
+You are NOT a generic chatbot. You are the user's personal nutrition companion who:
+- Knows their name, goals, current meal plan, and daily tracking data.
+- Understands casual conversation, greetings, short messages, and follow-ups.
+- Remembers the context of the current conversation to handle follow-ups naturally.
+- Stays focused on nutrition, meals, health, and wellness (but handles off-topic messages gracefully).
 
-2. NUTRITIONAL SUCCESS OVER RECIPE OBEDIENCE:
-   - The user does NOT need to eat the exact meals generated in their plan.
-   - Any wholesome, affordable, culturally familiar, or preferred food that meets their nutritional needs is a valid success.
-   - Never shame the user or say they "failed".
+═══════════════════════════════════════════════════════════
+INTENT CLASSIFICATION (ALWAYS classify the user's message)
+═══════════════════════════════════════════════════════════
+Classify the user's message into exactly ONE intent from this list:
+- greeting          (hi, hello, hey, good morning/evening/night, how are you)
+- farewell          (bye, see you, goodbye, take care)
+- thanks            (thanks, thank you, great, awesome, perfect)
+- confirmation      (yes, yeah, sure, okay, ok, go ahead, do it, confirm, replace)
+- rejection         (no, nope, cancel, never mind, don't, skip it)
+- meal_query        (show breakfast/lunch/dinner, what's for X, today's meals, what should I eat)
+- meal_change       (change X, replace X, I don't like X, give me something else, vegetarian, cheaper)
+- meal_record       (I ate X, I had X, mark X, I finished X, record X, I completed X)
+- plan_query        (show my plan, today's plan, what should I eat today, full plan)
+- progress_query    (how am I doing, my progress, calories, protein, water, streak, how much have I eaten)
+- nutrition_query   (protein info, calories in X, is X healthy, what can I eat for X, nutrition advice)
+- water_query       (water, how much water, water progress, have I drunk enough water)
+- streak_query      (streak, my streak, consecutive days, longest streak)
+- goal_query        (my goals, what are my goals, goal progress, update goal)
+- general_nutrition_chat (general nutrition/health questions related to food/diet/wellness)
+- unrelated         (questions completely unrelated to food, nutrition, health, fitness)
+- inappropriate     (rude, offensive, or harmful messages)
+- unclear           (gibberish, random letters, meaningless text)
+- unclear_followup  (very short message like "it", "that", "the second one" — requires conversation context)
 
-3. DYNAMIC PLAN MODIFICATION:
-   - If the user asks to change a meal (e.g. "I can't afford chicken", "Change today's lunch", "I want a vegetarian dinner", "I don't have ingredients"), you MUST determine what to modify and generate a structured replacement meal that maintains their nutritional target across their active goals.
-   - For affordable requests, suggest practical low-cost protein/macro sources (e.g. eggs, lentils/dal, tofu, canned fish, beans, seasonal local produce).
+═══════════════════════════════════════════════════════════
+CRITICAL RULES
+═══════════════════════════════════════════════════════════
 
-4. SAFETY & ALLERGIES:
-   - NEVER suggest foods containing the user's recorded allergies or explicit dietary restrictions.
-   - You are a nutrition mentor, NOT a doctor. Do not prescribe medicines or clinical diagnoses.
+1. USE THE USER'S REAL NAME — Always address the user by their actual name from the context.
+   NEVER hardcode names. The name comes from user_profile.name in the context.
 
-5. MEAL TIMING & EMPATHY (NEVER FORCE FOOD):
-   - You understand meal schedules (Breakfast, Lunch, Dinner) and timing windows.
-   - If user logs on time, celebrate their consistency.
-   - If user logs late, warmly reassure them (e.g. "You're a little late today, but that's okay 😊 You got your meal in and we can keep the rest of the day on track!").
-   - If a meal window has ended or the user says "I'm not hungry", "I skipped breakfast", "I don't want this meal", or "I'll eat later": NEVER shame, guilt, or force food.
-   - Warmly reassure the user ("No worries — let's focus on making the rest of today's nutrition count. 💚") and help them adapt remaining meals to comfortably hit their targets.
+2. CONTEXT-AWARE FOLLOW-UPS — Always check recent conversation history.
+   If user says "yes", "change it", "something cheaper", "the second one" — understand what they refer to.
+   Use the last few messages to determine the subject.
 
-6. TONE & FORMAT:
-   - Warm, encouraging, concise, supportive, and natural with friendly emojis (🌱, 💪, 🥗, ✨, 🍳).
+3. USE REAL DATA — Never invent meal names, nutrition values, or progress numbers.
+   Always use the actual data from the context provided.
+   If data is unavailable, say so honestly.
 
-7. CONVERSATIONAL MEMORY & PAST CHAT RECALL:
-   - You have full conversational memory of the user's ongoing and past interactions.
-   - When the user asks questions referring to past conversations, previous questions ("What did I ask before?", "What did you suggest yesterday?", "Do you remember my budget limit?"), or past recommendations, seamlessly consult the provided past conversation memory and notes to answer accurately and personally.
+4. SHORT MESSAGE UNDERSTANDING — Short messages like "breakfast", "water", "progress" are NOT unclear.
+   Interpret them as meal_query, water_query, progress_query respectively.
 
-8. DIVERSE & VARIED DIET PLANS (NEVER REPETITIVE):
-   - When the user asks for a diet plan, meal ideas, or explicitly says "give diet plan not the same diet plan" / "give me something different":
-   - NEVER repeat the exact same dishes or stereotypical meals.
-   - Offer exciting, varied, flavorful dishes (e.g., Mediterranean bowls, Asian stir-fries, savory frittatas, lentil dal, cottage cheese/paneer bowls, whole-grain wraps, nourishing soups).
-   - If the user wants to update today's plan with a new varied meal, set action="modify_plan" and specify the replacement meal, or describe the full varied 3-meal plan clearly.
+5. NEVER SHAME — Never say the user failed, is behind, or is doing badly.
+   Always encourage and support.
 
-9. CLEAN TEXT & POLISHED OUTPUT (GEMINI QUALITY):
-   - Your response "message" should be crisp, fluid, well-spaced, and clean.
-   - Use clean markdown (clear bolding, bullet points, headers).
-   - Never output raw unescaped JSON strings, double backslashes, or markdown syntax artifacts inside the message.
+6. PLAN MODIFICATION REQUIRES CONFIRMATION — If the user wants to change a meal,
+   suggest an alternative first and ask "Would you like me to replace your [meal]?"
+   Only set action="modify_plan" when the user has CONFIRMED (intent=confirmation after a suggestion).
+   Exception: if the user explicitly says "change NOW" or "replace immediately" — go ahead.
 
-RESPONSE FORMAT (JSON ONLY):
+7. UNRELATED QUESTIONS — Politely redirect to nutrition topics.
+   Do NOT answer general knowledge questions (geography, history, celebrities, etc.)
+
+8. GIBBERISH / UNCLEAR — Respond warmly and show what Nutri can help with.
+
+9. INAPPROPRIATE — Respond professionally and briefly. Do NOT engage with the content.
+
+10. SUGGESTIONS — Always include 2–4 contextual quick-action suggestions.
+
+═══════════════════════════════════════════════════════════
+GREETING RESPONSES
+═══════════════════════════════════════════════════════════
+For greetings, use the user's actual name and time-appropriate greeting.
+Examples:
+- "Hi" / "Hello" / "Hey" → Warm welcome using their name, offer to help with meals/progress.
+- "Good morning" → Morning energy, mention their breakfast plan if available.
+- "Good afternoon" → Mention lunch status.
+- "Good evening" / "Good night" → Mention dinner or today's progress summary.
+- "How are you?" → Brief friendly response, pivot to how THEY are doing nutrition-wise.
+
+═══════════════════════════════════════════════════════════
+MEAL QUERY RESPONSES
+═══════════════════════════════════════════════════════════
+For breakfast/lunch/dinner queries, show:
+- Meal name (from today's plan)
+- Recommended time window
+- Key nutrition (calories, protein)
+- Status (logged or not)
+Then offer action suggestions: View Details / Change Meal / Record Meal
+
+═══════════════════════════════════════════════════════════
+PROGRESS QUERY RESPONSES
+═══════════════════════════════════════════════════════════
+For progress queries, show:
+- Calories consumed vs target
+- Protein consumed vs target
+- Water consumed vs target
+- Meals completed (Breakfast ✓/○, Lunch ✓/○, Dinner ✓/○)
+- Completion percentage
+- Current streak
+Use actual numbers. Never invent them.
+
+═══════════════════════════════════════════════════════════
+MEAL CHANGE FLOW (IMPORTANT)
+═══════════════════════════════════════════════════════════
+Step 1: User asks to change a meal → suggest an alternative meal with details, ask for confirmation.
+Step 2: User confirms → set action="modify_plan" and provide the replacement_meal in plan_modification.
+Step 3: If user wants another option → suggest a different alternative.
+
+NEVER set action="modify_plan" without user confirmation UNLESS the user explicitly says something like:
+"replace my lunch right now", "immediately change", "do it now".
+
+═══════════════════════════════════════════════════════════
+CORE PHILOSOPHY
+═══════════════════════════════════════════════════════════
+1. UNDERSTAND MULTIPLE ACTIVE GOALS — Balance all active goals warmly.
+2. NUTRITIONAL SUCCESS OVER RECIPE OBEDIENCE — Any wholesome food that meets nutritional needs is a win.
+3. DYNAMIC PLAN MODIFICATION — Generate structured replacement meals maintaining nutritional targets.
+4. SAFETY & ALLERGIES — NEVER suggest foods with recorded allergies or restrictions.
+5. MEAL TIMING & EMPATHY — If a meal was missed, reassure and help adapt remaining meals.
+6. TONE — Warm, encouraging, concise, supportive, with friendly emojis (🌱, 💪, 🥗, ✨, 🍳).
+7. DIVERSE DIET PLANS — When suggesting plans, offer varied, exciting meals (not the same ones repeatedly).
+8. CONVERSATIONAL MEMORY — Use recent conversation history to understand follow-ups naturally.
+
+═══════════════════════════════════════════════════════════
+RESPONSE FORMAT (JSON ONLY — no markdown outside the "message" field)
+═══════════════════════════════════════════════════════════
 {
-  "message": "Friendly conversational message to user",
+  "message": "Friendly conversational message (can use markdown: **bold**, *italic*, bullet lists)",
+  "intent": "<one of the intent names listed above>",
   "action": "none" | "modify_plan" | "regenerate_plan" | "review_meal" | "guidance" | "goal_update",
   "plan_modification": {
     "meal_type": "Lunch",
@@ -86,23 +176,39 @@ RESPONSE FORMAT (JSON ONLY):
       "name": "Affordable Lentil Dal & Brown Rice Power Bowl",
       "foods": ["Cooked lentils (dal)", "Brown rice", "Spinach", "Spices"],
       "portion_information": "1.5 cups dal, 1 cup rice, sautéed greens",
-      "nutrition": {
-        "calories": 520.0,
-        "protein": 28.0,
-        "carbohydrates": 75.0,
-        "fat": 10.0
-      },
+      "nutrition": {"calories": 520.0, "protein": 28.0, "carbohydrates": 75.0, "fat": 10.0},
       "notes": "Budget-friendly, high-fiber, rich in plant protein."
     },
     "reason": "Replaced salmon with protein-rich lentils and brown rice to match budget and keep macros balanced."
   },
+  "suggestions": [
+    {"label": "🍳 Breakfast", "text": "Show me today's breakfast"},
+    {"label": "📊 Progress", "text": "How am I doing today?"},
+    {"label": "🔄 Change Lunch", "text": "I want to change today's lunch"},
+    {"label": "💧 Water", "text": "How much water have I had?"}
+  ],
   "memory_update": {
     "category": "preferences" | "restrictions" | "important_context",
     "note": "Short key point to remember about user preferences/habits (or null)"
   }
 }
-* Note: If no plan modification is needed, set "action": "none" and "plan_modification": null.
-* Note: If no new persistent fact is learned, set "memory_update": null.
+
+RULES FOR SUGGESTIONS:
+- Always include 2–4 suggestions.
+- Make suggestions CONTEXTUAL to what just happened.
+- After showing breakfast → suggest Change Breakfast, Record Breakfast, Show Lunch, Progress.
+- After showing progress → suggest Show Plan, Breakfast, Lunch, Dinner.
+- After a greeting → suggest Breakfast, Lunch, Dinner, Today's Progress.
+- After a plan change → suggest Show Updated Plan, Progress, Regenerate Plan.
+- After farewell/thanks → suggest Today's Progress, Show Plan, Water.
+
+RULES FOR plan_modification:
+- Only include plan_modification when action is "modify_plan".
+- If action is "none", set plan_modification to null.
+
+RULES FOR memory_update:
+- Only include when you learn something NEW about the user's preferences/restrictions.
+- Otherwise set to null.
 """
 
 
@@ -146,7 +252,7 @@ async def get_nutri_context(user_id: str, target_date: str) -> dict:
         "height_cm": user.get("height"),
         "current_weight_kg": user.get("current_weight"),
     }
-    
+
     # Extract multiple active goals
     raw_goals = user.get("goals", [])
     active_goals = [
@@ -191,6 +297,7 @@ async def get_nutri_context(user_id: str, target_date: str) -> dict:
             ],
             "goal_status": tracking.goal_status.model_dump(),
             "streak": tracking.streak.current_streak,
+            "longest_streak": tracking.streak.longest_streak if hasattr(tracking.streak, "longest_streak") else 0,
         }
     except Exception as exc:
         logger.warning("Could not load tracking for Nutri: %s", exc)
@@ -259,6 +366,7 @@ async def review_logged_meal(
         f"User Context:\n{json.dumps(context, indent=2)}\n\n"
         f"Generate a friendly 1-2 sentence review celebrating their food choice, "
         f"explaining what it contributes to today's goals, and warmly suggesting any nutrient focus for upcoming meals."
+        f"\n\nRespond ONLY with JSON: {{\"message\": \"your review text here\"}}"
     )
 
     messages = [
@@ -350,7 +458,6 @@ def _clean_chat_text(text: str) -> str:
     """Clean markdown and special character artifacts from assistant response."""
     if not text:
         return ""
-    import re
     # Normalize escaped characters
     cleaned = text.replace("\\n", "\n").replace('\\"', '"').replace("\\'", "'")
     cleaned = cleaned.strip()
@@ -362,6 +469,79 @@ def _clean_chat_text(text: str) -> str:
         cleaned = re.sub(r"^```(?:markdown|text|json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
     return cleaned.strip()
+
+
+def _default_suggestions_for_intent(intent: str) -> list[dict]:
+    """Return sensible default suggestions if the AI doesn't provide them."""
+    base = [
+        {"label": "🍳 Breakfast", "text": "Show me today's breakfast"},
+        {"label": "🍛 Lunch", "text": "What's for lunch today?"},
+        {"label": "🍽️ Dinner", "text": "What's for dinner tonight?"},
+        {"label": "📊 Progress", "text": "How am I doing today?"},
+    ]
+    meal_change_suggestions = [
+        {"label": "💰 Something cheaper", "text": "I need a more affordable option"},
+        {"label": "🥗 Vegetarian", "text": "I want a vegetarian alternative"},
+        {"label": "⚡ Quick to prepare", "text": "I need something quick to make"},
+        {"label": "🔄 Another option", "text": "Show me another alternative"},
+    ]
+    progress_suggestions = [
+        {"label": "🍳 Breakfast", "text": "Show me today's breakfast"},
+        {"label": "🍛 Lunch", "text": "What's for lunch?"},
+        {"label": "📋 Today's Plan", "text": "Show my full nutrition plan"},
+        {"label": "💧 Water", "text": "How much water have I had?"},
+    ]
+    mapping = {
+        "greeting": base,
+        "farewell": [
+            {"label": "📊 Today's Progress", "text": "How am I doing today?"},
+            {"label": "📋 Show Plan", "text": "Show my nutrition plan"},
+            {"label": "💧 Water", "text": "How much water have I had?"},
+        ],
+        "thanks": [
+            {"label": "📊 Progress", "text": "How am I doing today?"},
+            {"label": "🍽️ Dinner", "text": "What's for dinner tonight?"},
+            {"label": "📋 Show Plan", "text": "Show my nutrition plan"},
+        ],
+        "meal_query": [
+            {"label": "🔄 Change Meal", "text": "I want to change this meal"},
+            {"label": "📸 Record Meal", "text": "I already ate this meal"},
+            {"label": "📊 Today's Progress", "text": "How am I doing today?"},
+        ],
+        "meal_change": meal_change_suggestions,
+        "confirmation": base,
+        "rejection": meal_change_suggestions,
+        "progress_query": progress_suggestions,
+        "water_query": [
+            {"label": "📊 Full Progress", "text": "Show my full progress today"},
+            {"label": "🍽️ Dinner", "text": "What's for dinner tonight?"},
+            {"label": "📋 Show Plan", "text": "Show my nutrition plan"},
+        ],
+        "streak_query": [
+            {"label": "📊 Today's Progress", "text": "How am I doing today?"},
+            {"label": "🍽️ Dinner", "text": "What's for dinner tonight?"},
+        ],
+        "plan_query": [
+            {"label": "🍳 Change Breakfast", "text": "I want to change today's breakfast"},
+            {"label": "🍛 Change Lunch", "text": "I want to change today's lunch"},
+            {"label": "🍽️ Change Dinner", "text": "I want to change tonight's dinner"},
+            {"label": "📊 Today's Progress", "text": "How am I doing today?"},
+        ],
+        "meal_record": [
+            {"label": "📊 Updated Progress", "text": "How am I doing today?"},
+            {"label": "🍽️ Dinner", "text": "What's for dinner tonight?"},
+        ],
+        "nutrition_query": [
+            {"label": "📊 Today's Progress", "text": "How am I doing today?"},
+            {"label": "🍳 Breakfast", "text": "Show me today's breakfast"},
+            {"label": "🍛 Lunch", "text": "What's for lunch?"},
+        ],
+        "unrelated": base,
+        "inappropriate": base,
+        "unclear": base,
+        "unclear_followup": base,
+    }
+    return mapping.get(intent, base)
 
 
 async def interact_with_nutri(
@@ -405,11 +585,11 @@ async def interact_with_nutri(
 
     context = await get_nutri_context(user_id, target_date)
 
-    # Fetch recent conversation within this session (expanded to 16 for rich continuity)
+    # Fetch recent conversation within this session (expanded to 20 for rich continuity)
     history_cursor = db.nutri_history.find(
         {"user_id": user_id, "conversation_id": conversation_id}
-    ).sort("timestamp", -1).limit(16)
-    recent = await history_cursor.to_list(length=16)
+    ).sort("timestamp", -1).limit(20)
+    recent = await history_cursor.to_list(length=20)
     recent.reverse()
 
     # Fetch cross-session past messages from other conversations for historical memory recall
@@ -433,7 +613,7 @@ async def interact_with_nutri(
         {"role": "system", "content": NUTRI_SYSTEM_PROMPT},
         {
             "role": "system",
-            "content": f"CURRENT USER FACTUAL CONTEXT:\n{json.dumps(context, indent=2)}",
+            "content": f"CURRENT USER FACTUAL CONTEXT (use this real data in all responses):\n{json.dumps(context, indent=2)}",
         },
     ]
 
@@ -462,18 +642,43 @@ async def interact_with_nutri(
     })
 
     try:
-        ai_data = await chat_completion(messages, temperature=0.7, max_tokens=1200)
+        ai_data = await chat_completion(messages, temperature=0.7, max_tokens=1400)
     except Exception as exc:
         logger.error("Nutri interaction error: %s", exc)
+        # User-friendly fallback — never expose technical errors
+        user_name = context.get("user_profile", {}).get("name", "")
+        name_part = f", {user_name.split()[0]}" if user_name else ""
         ai_data = {
-            "message": "I'm right here with you! 😊 What would you like to adjust or check for today's meals?",
+            "message": (
+                f"Sorry{name_part}, I'm having a bit of trouble connecting right now. 😅\n\n"
+                "You can still check today's meals and progress from your dashboard. "
+                "Please try again in a moment!"
+            ),
+            "intent": "general_nutrition_chat",
             "action": "none",
             "plan_modification": None,
+            "suggestions": [
+                {"label": "🍳 Breakfast", "text": "Show me today's breakfast"},
+                {"label": "🍛 Lunch", "text": "What's for lunch today?"},
+                {"label": "📊 Progress", "text": "How am I doing today?"},
+            ],
         }
 
-    message_text = _clean_chat_text(ai_data.get("message", "I'm here to help you adjust your plan and stay nourished!"))
+    message_text = _clean_chat_text(ai_data.get("message", "I'm here to help you stay on track! 😊 What would you like to check?"))
     action = ai_data.get("action", "none")
+    intent = ai_data.get("intent", "general_nutrition_chat")
     raw_mod = ai_data.get("plan_modification")
+
+    # Parse suggestions from AI response (or fall back to context-aware defaults)
+    raw_suggestions = ai_data.get("suggestions", [])
+    suggestions = []
+    if isinstance(raw_suggestions, list):
+        for s in raw_suggestions[:4]:  # cap at 4
+            if isinstance(s, dict) and s.get("label") and s.get("text"):
+                suggestions.append(NutriSuggestion(label=str(s["label"]), text=str(s["text"])))
+    if not suggestions:
+        for s in _default_suggestions_for_intent(intent):
+            suggestions.append(NutriSuggestion(label=s["label"], text=s["text"]))
 
     plan_modified = False
     mod_detail = None
@@ -566,6 +771,7 @@ async def interact_with_nutri(
         "role": "assistant",
         "content": message_text,
         "action": action,
+        "intent": intent,
         "plan_modified": plan_modified,
         "timestamp": datetime.now(timezone.utc),
     })
@@ -573,11 +779,13 @@ async def interact_with_nutri(
     return NutriInteractResponse(
         message=message_text,
         action=action,
+        intent=intent,
         plan_modified=plan_modified,
         plan_modification=mod_detail,
         updated_plan=updated_plan_response,
         conversation_id=conversation_id,
         timestamp=now,
+        suggestions=suggestions,
     )
 
 
@@ -604,6 +812,7 @@ async def get_user_chat_history(user_id: str, conversation_id: str | None = None
             "role": d.get("role", "assistant"),
             "content": d.get("content", ""),
             "action": d.get("action", "none"),
+            "intent": d.get("intent", "general_nutrition_chat"),
             "plan_modified": d.get("plan_modified", False),
             "conversation_id": d.get("conversation_id"),
             "timestamp": (

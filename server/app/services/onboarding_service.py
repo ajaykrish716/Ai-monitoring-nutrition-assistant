@@ -26,6 +26,30 @@ from app.services.ai_service import AIServiceError, chat_completion
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Plan Duration Question — injected after AI questions complete
+# ---------------------------------------------------------------------------
+
+PLAN_DURATION_QUESTION_ID = "plan_duration_days"
+
+PLAN_DURATION_QUESTION = {
+    "id": PLAN_DURATION_QUESTION_ID,
+    "field": PLAN_DURATION_QUESTION_ID,
+    "text": "How long would you like to follow this personalized nutrition plan?",
+    "type": "single_select",
+    "options": ["7 Days", "14 Days", "21 Days", "30 Days", "Custom"],
+}
+
+CUSTOM_DURATION_QUESTION_ID = "plan_duration_custom"
+
+CUSTOM_DURATION_QUESTION = {
+    "id": CUSTOM_DURATION_QUESTION_ID,
+    "field": CUSTOM_DURATION_QUESTION_ID,
+    "text": "How many days would you like your plan to last? (Enter a number between 1 and 365)",
+    "type": "number",
+    "options": None,
+}
+
+# ---------------------------------------------------------------------------
 # System prompt — guides AI decision process for dynamic onboarding
 # ---------------------------------------------------------------------------
 
@@ -211,6 +235,37 @@ async def _generate_next_ai_step(user_id: str, user: dict) -> dict:
         if user.get("need"):
             summary.setdefault("need", user.get("need"))
 
+        # ── Intercept: ask the plan duration question BEFORE finalizing ──
+        # Only ask if it hasn't already been answered
+        answers = user.get("answers", {})
+        if PLAN_DURATION_QUESTION_ID not in answers:
+            # Stash the AI summary so we can finalize after the user picks a duration
+            asked_questions = list(user.get("asked_questions", []))
+            if not any(isinstance(q, dict) and q.get("id") == PLAN_DURATION_QUESTION_ID for q in asked_questions):
+                asked_questions.append(PLAN_DURATION_QUESTION)
+
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {
+                    "$set": {
+                        "known_facts": known_facts,
+                        "current_question": PLAN_DURATION_QUESTION,
+                        "asked_questions": asked_questions,
+                        "_pending_summary": summary,  # stash for use after duration answer
+                    }
+                },
+            )
+
+            return {
+                "status": "question",
+                "is_complete": False,
+                "questions_answered": len(answers),
+                "current_question": PLAN_DURATION_QUESTION,
+                "profile": user.get("profile", {}),
+                "need": user.get("need", ""),
+            }
+
+        # Duration already answered — finalize onboarding
         update_doc = {
             "$set": {
                 "onboarding_complete": True,
@@ -218,11 +273,11 @@ async def _generate_next_ai_step(user_id: str, user: dict) -> dict:
                 "known_facts": known_facts,
                 "current_question": None,
                 "missing_information": [],
-            }
+            },
+            "$unset": {"_pending_summary": ""},
         }
         await db.users.update_one({"_id": ObjectId(user_id)}, update_doc)
 
-        answers = user.get("answers", {})
         return {
             "status": "complete",
             "is_complete": True,
@@ -392,6 +447,172 @@ async def process_answer(user_id: str, answer: str) -> dict:
         user["asked_questions"] = asked_questions
 
         return await _generate_next_ai_step(user_id, user)
+
+
+    # Case B-extra: Answering the plan duration question (injected after AI questions)
+    if current_qid == PLAN_DURATION_QUESTION_ID:
+        # Parse the selected duration
+        raw_duration = cleaned_answer.strip()
+        duration_days: int | None = None
+
+        # Map predefined option labels to numbers
+        _duration_map = {
+            "7 days": 7, "7": 7,
+            "14 days": 14, "14": 14,
+            "21 days": 21, "21": 21,
+            "30 days": 30, "30": 30,
+        }
+        lower = raw_duration.lower()
+        if lower == "custom":
+            # Ask the custom days question
+            asked_questions = list(user.get("asked_questions", []))
+            if not any(isinstance(q, dict) and q.get("id") == CUSTOM_DURATION_QUESTION_ID for q in asked_questions):
+                asked_questions.append(CUSTOM_DURATION_QUESTION)
+
+            answers[current_qid] = cleaned_answer
+            known_facts[current_qid] = cleaned_answer
+
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {
+                    "$set": {
+                        "answers": answers,
+                        "known_facts": known_facts,
+                        "current_question": CUSTOM_DURATION_QUESTION,
+                        "asked_questions": asked_questions,
+                    }
+                },
+            )
+
+            return {
+                "status": "question",
+                "is_complete": False,
+                "questions_answered": len(answers),
+                "current_question": CUSTOM_DURATION_QUESTION,
+                "profile": user.get("profile", {}),
+                "need": user.get("need", ""),
+            }
+        elif lower in _duration_map:
+            duration_days = _duration_map[lower]
+        else:
+            # Try to parse as a number directly (e.g. user typed "14")
+            try:
+                duration_days = int(float(raw_duration))
+            except (ValueError, TypeError):
+                duration_days = None
+
+        if duration_days and 1 <= duration_days <= 365:
+            # Initialize the plan
+            try:
+                from app.services.plan_progress_service import initialize_plan
+                await initialize_plan(user_id, duration_days)
+            except Exception as exc:
+                logger.warning("Failed to initialize plan during onboarding: %s", exc)
+
+            # Store the answer and finalize
+            answers[current_qid] = str(duration_days)
+            known_facts["plan_duration_days"] = duration_days
+            answers["plan_duration_days"] = str(duration_days)
+
+            # Retrieve stashed summary from pending state
+            summary = user.get("_pending_summary", {})
+            if not isinstance(summary, dict) or not summary:
+                summary = dict(known_facts)
+            summary.setdefault("name", user.get("name", ""))
+            summary["plan_duration_days"] = duration_days
+
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {
+                    "$set": {
+                        "onboarding_complete": True,
+                        "profile": summary,
+                        "known_facts": known_facts,
+                        "answers": answers,
+                        "current_question": None,
+                        "missing_information": [],
+                    },
+                    "$unset": {"_pending_summary": ""},
+                },
+            )
+
+            return {
+                "status": "complete",
+                "is_complete": True,
+                "questions_answered": len(answers),
+                "current_question": None,
+                "profile": summary,
+                "need": user.get("need", ""),
+            }
+        else:
+            # Invalid input — re-ask the duration question
+            return {
+                "status": "question",
+                "is_complete": False,
+                "questions_answered": len(answers),
+                "current_question": PLAN_DURATION_QUESTION,
+                "profile": user.get("profile", {}),
+                "need": user.get("need", ""),
+            }
+
+    # Case B-extra2: Answering the custom duration number question
+    if current_qid == CUSTOM_DURATION_QUESTION_ID:
+        try:
+            duration_days = int(float(cleaned_answer))
+        except (ValueError, TypeError):
+            duration_days = 0
+
+        if 1 <= duration_days <= 365:
+            # Initialize the plan
+            try:
+                from app.services.plan_progress_service import initialize_plan
+                await initialize_plan(user_id, duration_days)
+            except Exception as exc:
+                logger.warning("Failed to initialize plan during onboarding: %s", exc)
+
+            answers[current_qid] = str(duration_days)
+            answers[PLAN_DURATION_QUESTION_ID] = str(duration_days)
+            known_facts["plan_duration_days"] = duration_days
+
+            summary = user.get("_pending_summary", {})
+            if not isinstance(summary, dict) or not summary:
+                summary = dict(known_facts)
+            summary.setdefault("name", user.get("name", ""))
+            summary["plan_duration_days"] = duration_days
+
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {
+                    "$set": {
+                        "onboarding_complete": True,
+                        "profile": summary,
+                        "known_facts": known_facts,
+                        "answers": answers,
+                        "current_question": None,
+                        "missing_information": [],
+                    },
+                    "$unset": {"_pending_summary": ""},
+                },
+            )
+
+            return {
+                "status": "complete",
+                "is_complete": True,
+                "questions_answered": len(answers),
+                "current_question": None,
+                "profile": summary,
+                "need": user.get("need", ""),
+            }
+        else:
+            # Out of valid range — re-ask custom question
+            return {
+                "status": "question",
+                "is_complete": False,
+                "questions_answered": len(answers),
+                "current_question": CUSTOM_DURATION_QUESTION,
+                "profile": user.get("profile", {}),
+                "need": user.get("need", ""),
+            }
 
     # Case B: Answering a subsequent dynamic question
     answers[current_qid] = cleaned_answer

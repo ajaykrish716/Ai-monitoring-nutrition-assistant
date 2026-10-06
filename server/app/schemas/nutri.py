@@ -3,6 +3,7 @@ Pydantic schemas for the Nutri AI Companion — meal reviews, plan modifications
 """
 
 from datetime import datetime
+from typing import List
 from pydantic import BaseModel, Field
 from app.schemas.daily_plan import MealItem, DailyPlanResponse, MacroNutrition
 
@@ -33,16 +34,24 @@ class PlanModificationDetail(BaseModel):
     reason: str = Field(default="", description="Why this substitution satisfies the user's needs and budget/taste constraints")
 
 
+class NutriSuggestion(BaseModel):
+    """A contextual quick-action suggestion button to show in the chat UI."""
+    label: str = Field(..., description="Short display label shown on the button, e.g. '🍳 Breakfast'")
+    text: str = Field(..., description="The full message text to send when the user taps this button")
+
+
 class NutriInteractResponse(BaseModel):
     """Structured response from Nutri."""
 
     message: str
-    action: str = Field(default="none", description="'none' | 'review_meal' | 'modify_plan' | 'guidance'")
+    action: str = Field(default="none", description="'none' | 'review_meal' | 'modify_plan' | 'regenerate_plan' | 'guidance' | 'goal_update'")
+    intent: str = Field(default="general_nutrition_chat", description="Classified user intent")
     plan_modified: bool = False
     plan_modification: PlanModificationDetail | None = None
     updated_plan: DailyPlanResponse | None = None
     conversation_id: str | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    suggestions: List[NutriSuggestion] = Field(default_factory=list, description="Contextual quick-action buttons to show after this response")
 
 
 class NutriMealReviewRequest(BaseModel):
@@ -52,3 +61,4 @@ class NutriMealReviewRequest(BaseModel):
     meal_type: str
     nutrition: MacroNutrition
     date: str | None = None
+

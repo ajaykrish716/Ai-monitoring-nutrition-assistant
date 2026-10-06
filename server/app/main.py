@@ -18,6 +18,10 @@ from app.routes.daily_plan import router as daily_plan_router
 from app.routes.tracking import router as tracking_router
 from app.routes.nutri import router as nutri_router
 from app.routes.meal_schedule import router as meal_schedule_router
+from app.routes.meal_evidence import router as meal_evidence_router
+from app.routes.chat import router as chat_router
+from app.routes.plan_progress import router as plan_progress_router
+from app.routes.reports import router as reports_router
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +56,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Routers
@@ -61,6 +66,10 @@ app.include_router(daily_plan_router)
 app.include_router(tracking_router)
 app.include_router(nutri_router)
 app.include_router(meal_schedule_router)
+app.include_router(meal_evidence_router)
+app.include_router(chat_router)
+app.include_router(plan_progress_router)
+app.include_router(reports_router)
 
 
 from fastapi import Depends, HTTPException, status

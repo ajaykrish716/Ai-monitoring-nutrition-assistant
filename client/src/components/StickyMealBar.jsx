@@ -1,10 +1,14 @@
 /**
  * Sticky Meal Bar Component — renders the three sticky meal boxes (Breakfast, Lunch, Dinner).
  * Stays permanently anchored above the independent chat stream without hiding messages.
+ *
+ * Added props:
+ *   evidenceMap  {object} - keyed by meal_type, contains evidence records
+ *   onViewDetails {function} - (mealType) => void — opens the MealDetailModal
  */
 
 import React from "react";
-import { Check, Clock, AlertCircle, Sparkles, Utensils, ChevronRight } from "lucide-react";
+import { Check, Clock, CheckCircle2, Camera, ChevronRight } from "lucide-react";
 
 export default function StickyMealBar({
   timingData,
@@ -13,6 +17,8 @@ export default function StickyMealBar({
   onLogPlannedMeal,
   onRequestSwap,
   loggingFood = false,
+  evidenceMap = {},
+  onViewDetails,
 }) {
   const formatTime12h = (timeStr) => {
     if (!timeStr) return "";
@@ -71,6 +77,10 @@ export default function StickyMealBar({
           const startStr = timing?.window_start || def.defaultStart;
           const endStr = timing?.window_end || def.defaultEnd;
           const timeWindowDisplay = `${formatTime12h(startStr)} – ${formatTime12h(endStr)}`;
+
+          // Evidence completion
+          const mealEvidence = evidenceMap[def.type] || null;
+          const hasEvidence = !!mealEvidence?.image_data_uri;
 
           // Real backend state - NEVER default to "available" if timing is unknown
           const rawState = timing?.state?.toLowerCase();
@@ -158,7 +168,7 @@ export default function StickyMealBar({
               </div>
 
               {/* Meal Name & Portion from plan */}
-              <div className="my-1 text-left min-h-[30px] flex flex-col justify-center">
+              <div className="my-1 text-left flex flex-col justify-center gap-0.5">
                 <span
                   className="text-xs font-semibold text-gray-800 dark:text-slate-200 line-clamp-1"
                   title={plannedMeal?.name || `${def.type} target`}
@@ -170,51 +180,78 @@ export default function StickyMealBar({
                     {plannedMeal.portion_information}
                   </span>
                 )}
+                {/* Evidence badge */}
+                {hasEvidence && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                    Evidence Uploaded
+                  </span>
+                )}
               </div>
 
               {/* Action Bar */}
               <div className="pt-2 border-t border-gray-100 dark:border-slate-800/80 flex items-center justify-between gap-1.5 mt-auto">
-                {isCompleted ? (
-                  <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Logged ✓</span>
-                  </span>
-                ) : isClosed ? (
-                  <span className="text-[11px] font-bold text-gray-400 dark:text-slate-500 cursor-not-allowed">
-                    Logging disabled
-                  </span>
-                ) : isAvailable ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (plannedMeal && onLogPlannedMeal) {
-                        onLogPlannedMeal(plannedMeal);
-                      } else if (onOpenLogModal) {
-                        onOpenLogModal(def.type);
-                      }
-                    }}
-                    disabled={loggingFood}
-                    className="flex items-center gap-1 px-3 py-1 text-xs font-bold rounded-xl bg-primary-600 hover:bg-primary-700 active:scale-95 text-white shadow-xs transition cursor-pointer disabled:opacity-50"
-                  >
-                    <Check className="w-3 h-3" />
-                    <span>Log {def.type}</span>
-                  </button>
-                ) : (
-                  <span className="text-[11px] font-semibold text-gray-400 dark:text-slate-500">
-                    Opens at {formatTime12h(startStr)}
-                  </span>
-                )}
+                {/* Left: log / status */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {isCompleted ? (
+                    <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Logged ✓</span>
+                    </span>
+                  ) : isClosed ? (
+                    <span className="text-[11px] font-bold text-gray-400 dark:text-slate-500 cursor-not-allowed">
+                      Logging disabled
+                    </span>
+                  ) : isAvailable ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (plannedMeal && onLogPlannedMeal) {
+                          onLogPlannedMeal(plannedMeal);
+                        } else if (onOpenLogModal) {
+                          onOpenLogModal(def.type);
+                        }
+                      }}
+                      disabled={loggingFood}
+                      className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-xl bg-primary-600 hover:bg-primary-700 active:scale-95 text-white shadow-xs transition cursor-pointer disabled:opacity-50"
+                    >
+                      <Check className="w-3 h-3" />
+                      <span>Log</span>
+                    </button>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-gray-400 dark:text-slate-500">
+                      Opens at {formatTime12h(startStr)}
+                    </span>
+                  )}
 
-                {/* Swap / Ask Nutri button */}
-                {!isCompleted && !isClosed && plannedMeal && onRequestSwap && (
+                  {/* Swap / Ask Nutri button */}
+                  {!isCompleted && !isClosed && plannedMeal && onRequestSwap && (
+                    <button
+                      type="button"
+                      onClick={() => onRequestSwap(plannedMeal)}
+                      className="text-[11px] font-semibold text-gray-500 hover:text-primary-600 dark:text-slate-400 dark:hover:text-primary-400 flex items-center gap-0.5 transition cursor-pointer"
+                      title="Ask Nutri to swap or customize this meal"
+                    >
+                      <span>Swap</span>
+                      <ChevronRight className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Right: View Details button — always shown */}
+                {onViewDetails && (
                   <button
                     type="button"
-                    onClick={() => onRequestSwap(plannedMeal)}
-                    className="text-[11px] font-semibold text-gray-500 hover:text-primary-600 dark:text-slate-400 dark:hover:text-primary-400 flex items-center gap-0.5 transition cursor-pointer"
-                    title="Ask Nutri to swap or customize this meal"
+                    onClick={() => onViewDetails(def.type)}
+                    className="flex items-center gap-0.5 text-[11px] font-bold text-primary-600 dark:text-primary-400 hover:underline transition cursor-pointer shrink-0"
+                    title={`View details for ${def.type}`}
                   >
-                    <span>Swap</span>
-                    <ChevronRight className="w-3 h-3" />
+                    {hasEvidence ? (
+                      <Camera className="w-3 h-3" />
+                    ) : (
+                      <ChevronRight className="w-3 h-3" />
+                    )}
+                    <span>{hasEvidence ? "Details" : "Details"}</span>
                   </button>
                 )}
               </div>

@@ -24,6 +24,13 @@ async def connect_db() -> None:
     await _database.users.create_index("email", unique=True)
     await _database.users.create_index("onboarding_complete")
 
+    # Meal evidence indexes — fast per-user/date lookups
+    await _database.meal_evidence.create_index(
+        [("user_id", 1), ("date", 1), ("meal_type", 1)],
+        unique=True,
+    )
+    await _database.meal_evidence.create_index([("user_id", 1), ("date", 1)])
+
 
 async def close_db() -> None:
     """Close the Motor client connection."""

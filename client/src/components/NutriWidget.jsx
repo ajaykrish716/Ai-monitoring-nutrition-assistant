@@ -63,28 +63,13 @@ export default function NutriWidget({
     };
   }, []);
 
-  const quickPrompts = [
-    {
-      label: "Can't afford lunch 💡",
-      text: "I can't afford today's lunch. Can you replace it with affordable budget-friendly foods?",
-    },
-    {
-      label: "Don't have chicken 🥑",
-      text: "I don't have chicken. What can I eat instead for today's meal?",
-    },
-    {
-      label: "Make dinner vegetarian 🥗",
-      text: "Can you change today's dinner to a high-protein vegetarian meal?",
-    },
-    {
-      label: "Ate something else 🍳",
-      text: "I already ate 2 eggs and 2 roti. How should I adjust the rest of today?",
-    },
-    {
-      label: "Check my protein 🎯",
-      text: "How can I hit my remaining protein target with what I have?",
-    },
-  ];
+  const [contextualSuggestions, setContextualSuggestions] = useState([
+    { label: "Can't afford lunch 💡", text: "I can't afford today's lunch. Can you replace it with affordable budget-friendly foods?" },
+    { label: "Don't have chicken 🥑", text: "I don't have chicken. What can I eat instead for today's meal?" },
+    { label: "Make dinner vegetarian 🥗", text: "Can you change today's dinner to a high-protein vegetarian meal?" },
+    { label: "Ate something else 🍳", text: "I already ate 2 eggs and 2 roti. How should I adjust the rest of today?" },
+    { label: "Check my protein 🎯", text: "How can I hit my remaining protein target with what I have?" },
+  ]);
 
   const formatMsgTime = (ts) => {
     if (!ts) return "";
@@ -143,9 +128,14 @@ export default function NutriWidget({
         plan_modified: response.plan_modified,
         plan_modification: response.plan_modification,
         timestamp: response.timestamp || new Date().toISOString(),
+        suggestions: response.suggestions || [],
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
+
+      if (response.suggestions && response.suggestions.length > 0) {
+        setContextualSuggestions(response.suggestions);
+      }
 
       // If plan was modified, trigger live update of Today's Diet Plan panel
       if (response.plan_modified && response.updated_plan) {
@@ -298,12 +288,12 @@ export default function NutriWidget({
       <div className="p-4 border-t border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3 shrink-0">
         {/* Quick Action Chips */}
         <div className="flex flex-wrap gap-1.5 overflow-x-auto max-h-16 nutri-chat-scroll">
-          {quickPrompts.map((q, idx) => (
+          {contextualSuggestions.map((q, idx) => (
             <button
               key={idx}
               onClick={() => handleSendMessage(q.text)}
               disabled={loading}
-              className="text-[11px] bg-gray-100 dark:bg-slate-800 hover:bg-primary-50 dark:hover:bg-primary-950 text-gray-700 dark:text-slate-300 hover:text-primary-800 dark:hover:text-primary-300 px-2.5 py-1 rounded-xl border border-gray-200 dark:border-slate-700 transition font-medium disabled:opacity-50 shrink-0"
+              className="text-[11px] bg-gray-100 dark:bg-slate-800 hover:bg-primary-50 dark:hover:bg-primary-950 text-gray-700 dark:text-slate-300 hover:text-primary-800 dark:hover:text-primary-300 px-2.5 py-1 rounded-xl border border-gray-200 dark:border-slate-700 transition font-medium disabled:opacity-50 shrink-0 cursor-pointer"
             >
               {q.label}
             </button>
