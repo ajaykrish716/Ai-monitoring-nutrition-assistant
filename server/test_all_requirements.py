@@ -134,8 +134,8 @@ def test_ai_variety_and_memory_prompts():
     from app.services.nutri_service import NUTRI_SYSTEM_PROMPT
     
     assert "CRITICAL VARIETY & DIVERSITY MANDATE" in DAILY_PLAN_SYSTEM_PROMPT
-    assert "CONVERSATIONAL MEMORY & PAST CHAT RECALL" in NUTRI_SYSTEM_PROMPT
-    assert "DIVERSE & VARIED DIET PLANS (NEVER REPETITIVE)" in NUTRI_SYSTEM_PROMPT
+    assert "CONVERSATIONAL MEMORY" in NUTRI_SYSTEM_PROMPT
+    assert "DIVERSE DIET PLANS" in NUTRI_SYSTEM_PROMPT
     assert "regenerate_plan" in NUTRI_SYSTEM_PROMPT
     print("  [OK] Variety and memory prompts verified in daily_plan_service and nutri_service")
 

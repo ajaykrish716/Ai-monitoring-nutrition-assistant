@@ -6,11 +6,11 @@
 import axios from "axios";
 
 const getBaseURL = () => {
-  const envUrl = import.meta.env.VITE_API_BASE_URL;
+  const envUrl = import.meta.env.VITE_API_BASE_URL?.trim();
   if (typeof window !== "undefined" && window.location.hostname === "127.0.0.1") {
-    return envUrl ? envUrl.replace("localhost", "127.0.0.1") : "http://127.0.0.1:8000";
+    return (envUrl ? envUrl.replace("localhost", "127.0.0.1") : "http://127.0.0.1:8000").replace(/\/+$/, "");
   }
-  return envUrl || "http://localhost:8000";
+  return (envUrl || "http://localhost:8000").replace(/\/+$/, "");
 };
 
 const api = axios.create({

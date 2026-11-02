@@ -8,7 +8,7 @@
 
 import api from "./api";
 
-const BASE_URL = api.defaults.baseURL || "http://localhost:8000";
+const BASE_URL = (api.defaults.baseURL || "http://localhost:8000").replace(/\/+$/, "");
 
 /**
  * Get the full Authorization header value from the current access token.
